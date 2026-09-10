@@ -1,0 +1,13 @@
+# secrets / local env
+real-estate-backend/.env
+real-estate-backend/.env.*
+!real-estate-backend/.env.example
+# virtualenvs / caches
+**/.venv/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+# internal planning note - withheld from public repo
+v1_plan.md
+# CRM admin surface withheld from the public demo for now
+real-estate-admin/

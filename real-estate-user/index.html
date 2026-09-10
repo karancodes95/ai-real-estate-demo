@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Amberstone Realty</title>
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700;900&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --amber: #b0742c;
+    --amber-dark: #8a5a20;
+    --charcoal: #23211d;
+    --ink: #1a1a1a;
+    --muted: #5a6570;
+    --soft: #f7f5f1;
+    --line: #e6e2da;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: "Roboto", system-ui, Arial, sans-serif; background: #fff; color: var(--ink);
+    height: 100vh; display: flex; flex-direction: column; }
+  h1, h2, h3 { font-weight: 900; letter-spacing: -.01em; }
+  a { color: inherit; }
+
+  /* Utility bar */
+  .utility { background: #fff; color: var(--muted); font-size: 12.5px; border-bottom: 1px solid var(--line);
+    display: flex; justify-content: space-between; align-items: center; padding: 7px 34px; }
+  .utility .locs, .utility .links { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  .utility .locs span { color: var(--ink); font-weight: 700; }
+  .utility a { text-decoration: none; color: var(--amber); }
+  .utility a:hover { text-decoration: underline; }
+
+  /* Header */
+  header { background: #fff; padding: 14px 34px; display: flex; align-items: center; gap: 28px; border-bottom: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 10px; font-size: 22px; font-weight: 900; color: var(--amber); text-decoration: none; }
+  .brand svg { width: 26px; height: 26px; stroke: var(--amber); }
+  header nav { display: flex; gap: 24px; margin-left: 8px; }
+  header nav a { text-decoration: none; font-weight: 500; font-size: 15px; color: var(--ink); padding: 6px 0; border-bottom: 3px solid transparent; }
+  header nav a:hover { color: var(--amber); border-bottom-color: var(--amber); }
+  header .spacer { flex: 1; }
+  header .mailus { background: var(--amber); color: #fff; text-decoration: none; font-weight: 700; padding: 10px 22px; border-radius: 5px; font-size: 14px; }
+  header .mailus:hover { background: var(--amber-dark); }
+
+  main { flex: 1; display: flex; overflow: hidden; }
+  #left { width: 70%; overflow-y: auto; }
+
+  /* Hero */
+  .hero { position: relative; color: #fff; padding: 92px 44px 100px;
+    background: linear-gradient(115deg, #2b2317 0%, #6e4a1e 55%, var(--amber) 100%); }
+  .hero h1 { font-size: 46px; line-height: 1.05; margin-bottom: 16px; max-width: 640px; }
+  .hero p { font-size: 18px; max-width: 540px; opacity: .96; margin-bottom: 26px; font-weight: 400; }
+  .hero .links { display: flex; gap: 28px; flex-wrap: wrap; }
+  .hero .links a { color: #fff; text-decoration: underline; text-underline-offset: 5px; font-weight: 700; font-size: 15px; }
+  .hero .links a:hover { opacity: .85; }
+
+  /* Browse categories */
+  .services { padding: 48px 44px; background: var(--soft); }
+  .eyebrow { text-transform: uppercase; letter-spacing: .1em; font-size: 12px; font-weight: 700; color: var(--amber); }
+  .services h2 { color: var(--ink); font-size: 30px; margin: 6px 0 24px; }
+  .svc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 34px 40px; }
+  .svc { align-self: start; }
+  .svc summary { list-style: none; cursor: pointer; }
+  .svc summary::-webkit-details-marker { display: none; }
+  .svc summary h3 { color: var(--amber); font-size: 21px; margin-bottom: 6px; }
+  .svc summary .desc { color: var(--muted); font-size: 14px; margin-bottom: 10px; font-weight: 400; }
+  .svc summary .toggle { color: var(--amber); font-weight: 700; font-size: 14px; display: inline-flex; align-items: center; gap: 6px; }
+  .svc summary .toggle svg { width: 14px; height: 14px; transition: transform .2s ease; }
+  .svc[open] summary .toggle svg { transform: rotate(180deg); }
+  .svc summary:hover h3 { text-decoration: underline; }
+  .svc .body { margin-top: 14px; }
+  .svc .body ul { list-style: none; }
+  .svc .body li { padding: 6px 0; border-bottom: 1px solid var(--line); }
+  .svc .body a { text-decoration: none; font-size: 14px; color: var(--amber); font-weight: 400; }
+  .svc .body a:hover { text-decoration: underline; }
+
+  /* Alternating text blocks */
+  .feature { display: flex; align-items: stretch; background: #fff; }
+  .feature .txt { flex: 1; padding: 56px 44px; align-self: center; }
+  .feature .pane { width: 40%; flex: none; min-height: 260px; }
+  .feature.rev { flex-direction: row-reverse; }
+  .feature h2 { font-size: 30px; color: var(--ink); margin-bottom: 14px; line-height: 1.15; }
+  .feature p { color: var(--muted); font-size: 15.5px; line-height: 1.6; max-width: 560px; font-weight: 400; }
+  .feature .acts { margin-top: 20px; display: flex; gap: 22px; flex-wrap: wrap; align-items: center; }
+  .feature .btn { background: var(--amber); color: #fff; text-decoration: none; font-weight: 700; padding: 12px 22px; border-radius: 5px; font-size: 14px; }
+  .feature .btn:hover { background: var(--amber-dark); }
+  .feature .textlink { color: var(--amber); font-weight: 700; text-decoration: none; font-size: 14.5px; }
+  .feature .textlink:hover { text-decoration: underline; }
+  .feature.alt { background: var(--soft); }
+  .pane { display: flex; align-items: center; justify-content: center; }
+  .pane svg { width: 150px; height: 150px; stroke: #fff; opacity: .92; }
+  .p1 { background: linear-gradient(160deg, #d9c39a, #b0742c); }
+  .p2 { background: linear-gradient(160deg, #23211d, #6e4a1e); }
+  .p3 { background: linear-gradient(160deg, #ded8cc, #8a5a20); }
+  .svc summary h3 svg { width: 19px; height: 19px; stroke: var(--amber); vertical-align: -3px; margin-right: 7px; }
+
+  footer { background: var(--charcoal); color: #d8cfc2; padding: 32px 44px; font-size: 13px; }
+  footer .row { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+  footer a { color: #d8cfc2; text-decoration: none; margin-right: 18px; }
+  footer a:hover { color: #fff; }
+  footer .fine { margin-top: 16px; color: #a1917b; }
+
+  /* Chatbot: dedicated 30% right column */
+  #chat-panel { width: 30%; background: #fff; border-left: 1px solid var(--line); display: flex; flex-direction: column; overflow: hidden; }
+  #chat-head { background: var(--amber); color: #fff; padding: 14px 16px; display: flex; align-items: center; gap: 10px; }
+  #chat-head .av { width: 32px; height: 32px; border-radius: 50%; background: #fff; flex: none;
+    display: flex; align-items: center; justify-content: center; }
+  #chat-head .av svg { width: 19px; height: 19px; stroke: var(--amber); }
+  #chat-head .t { font-weight: 700; }
+  #chat-head .s { font-size: 12px; opacity: .9; }
+  #chat-msgs { flex: 1; padding: 14px; overflow-y: auto; font-size: 14px; background: #fcfaf7; }
+  .msg { margin-bottom: 10px; padding: 10px 13px; border-radius: 10px; max-width: 88%; white-space: pre-wrap; line-height: 1.45; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+  .bot { background: #f4ecdd; color: #3d2f18; border-bottom-left-radius: 3px; }
+  .user { background: var(--amber); color: #fff; margin-left: auto; border-bottom-right-radius: 3px; }
+  .msg.typing { color: #98917f; font-style: italic; background: #f2efe8; box-shadow: none; }
+  #chat-input { display: flex; border-top: 1px solid var(--line); padding: 8px; gap: 8px; background: #fff; }
+  #chat-input input { flex: 1; border: 1px solid var(--line); border-radius: 5px; padding: 10px 14px; outline: none; font-family: inherit; font-size: 14px; }
+  #chat-input input:focus { border-color: var(--amber); }
+  #chat-input input:disabled { background: #f2f4f6; }
+  #chat-input button { border: none; background: var(--amber); color: #fff; padding: 0 18px; border-radius: 5px; cursor: pointer; font-weight: 700; }
+  #chat-input button:hover { background: var(--amber-dark); }
+  #chat-input button:disabled { background: #d3b285; cursor: default; }
+</style>
+</head>
+<body>
+
+<div style="background:#23211d; color:#fff; text-align:center; padding:7px 16px; font-size:12.5px; letter-spacing:.02em;">Demo site with fictional data. Not a real estate agency.</div>
+
+<div class="utility">
+  <div class="locs"><span>Areas:</span>
+    <a href="#">Meadowpark</a><a href="#">Riverside East</a><a href="#">Old Mill Road</a><a href="#">Sunhill</a><a href="#">Lakefront</a>
+  </div>
+  <div class="links">
+    <a href="#">1800-000-000</a>
+  </div>
+</div>
+
+<header>
+  <a href="../" class="brand"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-5h4v5"/></svg> Amberstone Realty</a>
+  <nav>
+    <a href="#">Buy</a><a href="#">Rent</a>
+    <a href="#">New Projects</a>
+  </nav>
+  <div class="spacer"></div>
+  <a class="mailus" href="mailto:hello@amberstone.example?subject=Property%20enquiry">Email us</a>
+</header>
+
+<main>
+  <div id="left">
+
+    <!-- Hero -->
+    <section class="hero">
+      <h1>Find the place your life fits into.</h1>
+      <p>Flats, villas and plots across the city's best neighbourhoods. Tell our assistant what you're looking for, or email us directly, and an advisor will take it from there.</p>
+      <div class="links">
+        <a href="#">Browse homes</a><a href="#">New projects</a><a href="mailto:hello@amberstone.example?subject=Property%20enquiry">Email your enquiry</a>
+      </div>
+    </section>
+
+    <!-- Browse categories (accordion) -->
+    <section class="services">
+      <div class="eyebrow">Browse</div>
+      <h2>Homes for every plan</h2>
+      <div class="svc-grid">
+
+        <details class="svc">
+          <summary>
+            <h3><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="18" rx="1"/><path d="M9 7h2M13 7h2M9 11h2M13 11h2M9 15h2M13 15h2M10 21v-3h4v3"/></svg>Apartments</h3>
+            <div class="desc">1 to 4 BHK across the city</div>
+            <span class="toggle">Show options <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>
+          </summary>
+          <div class="body">
+            <ul>
+              <li><a href="#">1 BHK starters</a></li><li><a href="#">2 BHK family homes</a></li>
+              <li><a href="#">3 BHK premium</a></li><li><a href="#">Penthouses</a></li>
+            </ul>
+          </div>
+        </details>
+
+        <details class="svc">
+          <summary>
+            <h3><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-5h4v5"/></svg>Villas &amp; Row Houses</h3>
+            <div class="desc">Gated communities and independents</div>
+            <span class="toggle">Show options <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>
+          </summary>
+          <div class="body">
+            <ul>
+              <li><a href="#">Gated villas</a></li><li><a href="#">Row houses</a></li>
+              <li><a href="#">Independent bungalows</a></li><li><a href="#">Farmhouses</a></li>
+            </ul>
+          </div>
+        </details>
+
+        <details class="svc">
+          <summary>
+            <h3><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18l6-2 6 2 6-2V6l-6 2-6-2-6 2z"/><path d="M9 4v12M15 6v12"/></svg>Plots &amp; Land</h3>
+            <div class="desc">Residential and investment parcels</div>
+            <span class="toggle">Show options <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>
+          </summary>
+          <div class="body">
+            <ul>
+              <li><a href="#">Residential plots</a></li><li><a href="#">Corner parcels</a></li>
+              <li><a href="#">Gated plotting schemes</a></li><li><a href="#">Farm land</a></li>
+            </ul>
+          </div>
+        </details>
+
+        <details class="svc">
+          <summary>
+            <h3><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 9h2M13 9h2M9 13h2M13 13h2M10 21v-4h4v4"/></svg>Commercial</h3>
+            <div class="desc">Offices and shops that work hard</div>
+            <span class="toggle">Show options <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>
+          </summary>
+          <div class="body">
+            <ul>
+              <li><a href="#">Office spaces</a></li><li><a href="#">Retail shops</a></li>
+              <li><a href="#">Showrooms</a></li><li><a href="#">Co-working floors</a></li>
+            </ul>
+          </div>
+        </details>
+
+      </div>
+    </section>
+
+    <!-- Feature blocks -->
+    <section class="feature">
+      <div class="txt">
+        <h2>Skip the enquiry form.</h2>
+        <p>Just tell the assistant on the right what you're after, in your own words. It understands things like "2 BHK near Riverside East under 80L" and only asks for what's missing.</p>
+        <div class="acts"><a class="btn" href="mailto:hello@amberstone.example?subject=Property%20enquiry">Or email us instead</a></div>
+      </div>
+      <div class="pane p1"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11a8 8 0 1 1 4.6 7.2L4 20l1.1-3.6A8 8 0 0 1 4 11z"/><path d="M8.5 11h7M8.5 14h4"/></svg></div>
+    </section>
+
+    <section class="feature rev alt">
+      <div class="txt">
+        <h2>An advisor, not an inbox.</h2>
+        <p>Every enquiry lands with a named advisor who knows the areas you shortlisted. You get a confirmation email right away, and a call back within working hours.</p>
+        <div class="acts"><a class="textlink" href="#">How we work</a></div>
+      </div>
+      <div class="pane p2"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.2-3.8 4.2-6 8-6s6.8 2.2 8 6"/></svg></div>
+    </section>
+
+    <section class="feature">
+      <div class="txt">
+        <h2>Priced right, papered right.</h2>
+        <p>Clear title checks, honest pricing guidance and loan help when you need it. We stay with you from the first visit to the final registration.</p>
+        <div class="acts"><a class="textlink" href="#">Our services</a></div>
+      </div>
+      <div class="pane p3"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/><path d="M10 12h6M10 16h6M10 8h1"/><path d="M9.5 19.5l1.5-1.5"/></svg></div>
+    </section>
+
+    <footer>
+      <div class="row">
+        <div>
+          <a href="#">Buy</a><a href="#">Rent</a><a href="#">New Projects</a>
+          <a href="#">About</a><a href="#">Careers</a><a href="mailto:hello@amberstone.example?subject=Property%20enquiry">Contact</a>
+        </div>
+        <div><a href="#">1800-000-000</a></div>
+      </div>
+      <div class="fine">Amberstone Realty, a demo site with fictional data. Not a real estate agency.</div>
+    </footer>
+  </div>
+
+  <!-- Chatbot: dedicated 30% right column -->
+  <div id="chat-panel">
+    <div id="chat-head">
+      <span class="av"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-5h4v5"/></svg></span>
+      <div><div class="t">Amberstone Assistant</div><div class="s">Tell us what you're looking for</div></div>
+    </div>
+    <div id="chat-msgs">
+      <div class="msg bot">Hi! Looking to buy, rent or invest? Tell me what you have in mind and I'll set you up with the right advisor.</div>
+    </div>
+    <div id="chat-input">
+      <input id="chat-text" type="text" placeholder="Type a message..." autocomplete="off" />
+      <button id="chat-send">Send</button>
+    </div>
+  </div>
+</main>
+
+<script src="app.js"></script>
+
+</body>
+</html>

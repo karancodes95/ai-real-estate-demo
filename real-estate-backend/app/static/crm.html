@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Amberstone CRM — Opportunities</title>
+<link rel="icon" type="image/png" href="/static/favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700;900&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --blue: #1e6ff5;
+    --blue-dark: #1557c9;
+    --ink: #101828;
+    --muted: #667085;
+    --faint: #98a2b3;
+    --bg: #f2f4f7;
+    --line: #e4e7ec;
+    --green: #12805c;
+    --hot: #d92d20;
+    --warm: #b0742c;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: "Roboto", system-ui, Arial, sans-serif; background: var(--bg); color: var(--ink);
+    height: 100vh; display: flex; flex-direction: column; font-size: 14px; }
+
+  /* Top chrome: title row + controls row, GHL-style */
+  #chrome { background: #fff; border-bottom: 1px solid var(--line); }
+  #titlebar { display: flex; align-items: center; gap: 12px; padding: 12px 20px 8px; }
+  #titlebar h1 { font-size: 18px; font-weight: 700; }
+  #titlebar .crumb { color: var(--faint); font-size: 12.5px; }
+  #titlebar .spacer { flex: 1; }
+  #titlebar a.site { color: var(--blue); font-weight: 500; font-size: 13px; text-decoration: none; }
+  #titlebar a.site:hover { text-decoration: underline; }
+
+  #controls { display: flex; align-items: center; gap: 10px; padding: 8px 20px 12px; flex-wrap: wrap; }
+  .select, #search { border: 1px solid #d0d5dd; border-radius: 8px; background: #fff; padding: 8px 12px;
+    font-family: inherit; font-size: 13.5px; color: var(--ink); outline: none; }
+  .select { font-weight: 500; }
+  #search { width: 230px; }
+  #search:focus, .select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(30,111,245,.12); }
+  #controls .spacer { flex: 1; }
+  .btn { border: none; border-radius: 8px; padding: 9px 16px; font-weight: 500; font-size: 13.5px; cursor: pointer; font-family: inherit; }
+  .btn.primary { background: var(--blue); color: #fff; }
+  .btn.primary:hover { background: var(--blue-dark); }
+  .btn.ghost { background: #fff; color: var(--ink); border: 1px solid #d0d5dd; }
+  .btn.ghost:hover { background: #f9fafb; }
+
+  #board { flex: 1; display: flex; gap: 14px; padding: 14px 20px; overflow-x: auto; align-items: flex-start; }
+  .col { width: 280px; flex: none; display: flex; flex-direction: column; max-height: 100%; }
+  .colhead { padding: 4px 4px 10px; }
+  .colhead .name { font-weight: 700; font-size: 13.5px; display: flex; align-items: center; gap: 8px; }
+  .colhead .name .swatch { width: 8px; height: 8px; border-radius: 50%; background: var(--blue); }
+  .colhead .totals { color: var(--muted); font-size: 12px; margin-top: 3px; }
+  .cards { overflow-y: auto; min-height: 60px; padding-bottom: 8px; }
+  .col.dragover .cards { outline: 2px dashed var(--blue); outline-offset: -4px; border-radius: 10px; }
+
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-bottom: 10px;
+    cursor: grab; box-shadow: 0 1px 2px rgba(16,24,40,.06); }
+  .card.dragging { opacity: .45; }
+  .card .head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .av { width: 34px; height: 34px; border-radius: 50%; background: #e8f0fe; color: var(--blue);
+    display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; flex: none; }
+  .card .who { min-width: 0; }
+  .card .name { font-weight: 700; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card .sub { color: var(--faint); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card .value { margin-left: auto; color: var(--green); font-weight: 700; font-size: 13.5px; white-space: nowrap; }
+  .field { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; font-size: 12.5px; }
+  .field .k { color: var(--faint); }
+  .field .v { color: var(--ink); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pill { display: inline-block; border-radius: 999px; padding: 1px 9px; font-size: 11.5px; font-weight: 700; color: #fff; background: var(--faint); }
+  .pill.hot { background: var(--hot); }
+  .pill.warm { background: var(--warm); }
+  .actions { display: flex; gap: 12px; border-top: 1px solid var(--line); margin-top: 9px; padding-top: 9px; color: var(--faint); }
+  .actions svg { width: 15px; height: 15px; stroke: currentColor; cursor: pointer; }
+  .actions svg:hover { stroke: var(--blue); }
+  .actions .when { margin-left: auto; font-size: 11.5px; }
+</style>
+</head>
+<body>
+
+<div id="chrome">
+  <div id="titlebar">
+    <h1>Opportunities</h1>
+    <span class="crumb">Amberstone Realty</span>
+    <div class="spacer"></div>
+    <a class="site" href="/">Customer site</a>
+  </div>
+  <div id="controls">
+    <select class="select" id="pipeline"><option>Buyer Pipeline</option></select>
+    <input id="search" type="text" placeholder="Search opportunities" autocomplete="off">
+    <select class="select" id="sort">
+      <option value="score">Sort: Lead score</option>
+      <option value="recent">Sort: Most recent</option>
+    </select>
+    <div class="spacer"></div>
+    <button class="btn ghost" id="refresh">Refresh</button>
+    <button class="btn primary" id="add">+ Add opportunity</button>
+  </div>
+</div>
+
+<div id="board"></div>
+
+<script src="/static/crm.js"></script>
+
+</body>
+</html>
