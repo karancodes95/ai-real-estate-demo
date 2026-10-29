@@ -3,10 +3,16 @@
 One tool for v1: ``save_lead``. It receives the fields the LLM extracted plus
 its grade/rationale, computes the deterministic rule score, persists the lead,
 and fires the day-0 confirmation email (soft-fail, logged to email_log).
+
+The lead's ``session_id`` comes from ``turn_session_id``, the server-side turn
+context set by generate_reply (client.py), never from the LLM's arguments or
+the visitor's JSON. The CRM routes show a visitor only the leads of their own
+chat session, so this id decides who can see the lead.
 """
 
 import asyncio
 import logging
+from contextvars import ContextVar
 from typing import Annotated, Any
 
 from claude_agent_sdk import tool
@@ -18,6 +24,13 @@ from ..models import EmailLog, Lead
 from ..scoring import compute_score
 
 logger = logging.getLogger("uvicorn.error")
+
+# The chat session the current turn runs in. generate_reply sets it before the
+# SDK client connects; the SDK runs each tool call in a task spawned from that
+# client, and asyncio tasks copy the context they start in, so the tool sees
+# this turn's id. "" (the default) means no session: the lead is saved but no
+# visitor's CRM lists it.
+turn_session_id: ContextVar[str] = ContextVar("turn_session_id", default="")
 
 
 def _text(text: str, is_error: bool = False) -> dict[str, Any]:
@@ -59,7 +72,6 @@ def _summary(lead: Lead) -> str:
         "intent": Annotated[str, "buy | invest | rent | browsing | unknown"],
         "grade": Annotated[str, "Your grade: hot | warm | cold"],
         "rationale": Annotated[str, "One line on why you graded it that way"],
-        "session_id": Annotated[str, "Chat session id if known, else empty"],
     },
 )
 async def save_lead(args: dict[str, Any]) -> dict[str, Any]:
@@ -89,7 +101,8 @@ async def save_lead(args: dict[str, Any]) -> dict[str, Any]:
         score=compute_score(budget, timeline_months, financing, intent),
         grade=str(args.get("grade", "")).strip(),
         rationale=str(args.get("rationale", "")).strip()[:300],
-        session_id=str(args.get("session_id", "")).strip()[:100],
+        # Server-side only: a "session_id" in args is ignored.
+        session_id=turn_session_id.get()[:100],
     )
     async with SessionLocal() as s:
         s.add(lead)

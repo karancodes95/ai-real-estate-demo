@@ -15,6 +15,13 @@ const msgs = document.getElementById("chat-msgs");
 const input = document.getElementById("chat-text");
 const sendBtn = document.getElementById("chat-send");
 let sessionId = null;  // carries multi-turn context across requests
+// The CRM page (crm.js) shows a visitor only the leads from their own chat:
+// it sends the session id stored here. Both pages are on one origin, so they
+// share localStorage. If storage is blocked, the CRM just shows no leads.
+const SESSION_KEY = "amberstone.chat_session_id";
+function rememberSession(id) {
+  try { localStorage.setItem(SESSION_KEY, id); } catch { /* storage blocked */ }
+}
 
 // Minimal, injection-safe Markdown: escape HTML first, then a small subset.
 function escapeHtml(s) {
@@ -62,7 +69,10 @@ async function send() {
       addMsg("Sorry, something went wrong. Please try again.", "bot");
     } else {
       const data = await res.json();
-      if (data.session_id) sessionId = data.session_id;
+      if (data.session_id) {
+        sessionId = data.session_id;
+        rememberSession(sessionId);
+      }
       addMsg(data.reply, "bot");
     }
   } catch (e) {

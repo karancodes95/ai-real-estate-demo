@@ -18,7 +18,8 @@ action, and the system is designed so it can still only capture a lead.
    length (it is client-controlled and passed to the SDK's `resume`). The
    `save_lead` tool re-validates and normalizes every field, requires a name and
    a syntactically valid email before saving, and truncates free-text fields
-   (rationale, session id) before they reach the database.
+   (rationale) before they reach the database. The lead's session id is not
+   an input: it comes from the server-side turn context.
 3. **Per-IP abuse cap** (`app/ratelimit.py`): a Postgres-backed daily counter,
    made race-safe with an atomic `INSERT ... ON CONFLICT DO NOTHING` followed by
    `SELECT ... FOR UPDATE`, so concurrent requests (and multiple uvicorn
@@ -33,17 +34,36 @@ action, and the system is designed so it can still only capture a lead.
    scripts same-origin (the chat JS is served from `/static`; only Google Fonts
    are allowed), plus `X-Content-Type-Options: nosniff`, `Referrer-Policy:
    no-referrer`, `X-Frame-Options: DENY`, and HSTS on every response.
+6. **Admin API behind its own login** (`app/admin_auth.py`, `app/admin.py`):
+   the `/admin` routes (metrics, sessions with transcripts and IPs, leads)
+   need a bearer JWT from `POST /admin/login`: an argon2id-hashed password
+   (`ADMIN_PASSWORD_HASH`, empty = login off), a 7-day HS256 token signed
+   with `ADMIN_JWT_SECRET`, and 5 failed logins per IP per 15 min. The
+   public `API_KEY` never opens them. A failed chat turn stores only the
+   exception's class name, never its message.
+7. **The CRM shows each visitor only their own leads** (`app/main.py`,
+   `app/agent/client.py`, `app/agent/tools.py`): the server picks a new
+   chat's session id (a UUID passed to the SDK) and `save_lead` stores the
+   turn's id on the lead, never one from the LLM or the request JSON.
+   `GET /api/crm/leads` and the stage `PATCH` act only on leads whose
+   session id matches the caller's `X-Session-Id` (a canonical UUID); none,
+   or any other value, gets `[]` or a 404. The chat page stores its session
+   id in localStorage and the CRM page, on the same origin, sends it. The
+   public `API_KEY` is only a bot gate here; every lead across sessions is
+   on `/admin/leads`, behind the admin JWT.
 
 ## Accepted risks (this demo)
 
 These are acceptable because the data is fictional and self-service. They are
 called out so anyone reusing this code for real data knows to change them:
 
-1. **The CRM surface is unauthenticated.** `/crm`, `GET /api/crm/leads`, and
-   `PATCH /api/crm/leads/{id}/stage` have no auth: anyone who reaches the demo
-   can view captured (fictional) leads and move pipeline stages. Put the CRM
-   behind an auth layer (session login or bearer token) before real leads flow
-   through it.
+1. **A chat session id is a bearer secret.** The CRM has no login: whoever
+   holds a session id sees and moves that session's leads, and can resume
+   that chat (`resume` takes the id the client sends). Ids are random UUIDs
+   kept in the visitor's browser, so this is not guessable, but a leaked id
+   (shared device, a script on the same origin) exposes that one session.
+   Bind sessions to the browser that started them, or put the CRM behind a
+   real login, before real leads flow through it.
 2. **Lead text is stored verbatim.** Chat transcripts and lead fields are
    persisted as entered (`chat_messages`, `leads`) for demo follow-up, including
    whatever email/phone a visitor types. Add a PII scrubber / retention policy
@@ -65,7 +85,8 @@ called out so anyone reusing this code for real data knows to change them:
 2. **Keep secrets in `.env`, never committed.** Set `DATABASE_URL` and, if
    sending real email, `ZOHO_EMAIL` + `ZOHO_APP_PASSWORD` (an app-specific
    password, never your account password). Leave the email creds empty to
-   disable sending.
+   disable sending. For the admin API set `ADMIN_PASSWORD_HASH` (from
+   `tool/hash_admin_password.py`) and a random `ADMIN_JWT_SECRET`.
 3. **Connect Postgres as a least-privileged role** scoped to the
    `lead_to_lease` database; the app only needs DML on its own tables, not
    superuser.
@@ -78,8 +99,13 @@ called out so anyone reusing this code for real data knows to change them:
 
 ## Dependencies
 
-Dependencies are pinned in `requirements.txt`. Run `pip-audit` against the lock
-in CI as a standing gate and keep the Agent SDK and transport libraries current.
+Dependencies are hash-locked in `requirements.txt` (runtime) and
+`requirements-dev.txt` (tests), from `requirements.in` and
+`requirements-dev.in`. Install with `--require-hashes --only-binary=:all:`.
+Each version is 14+ days old and was checked against OSV; the lock headers
+list the exceptions and the known advisories still open. Run `pip-audit`
+against the lock in CI as a standing gate and keep the Agent SDK and
+transport libraries current.
 
 ## Reporting
 

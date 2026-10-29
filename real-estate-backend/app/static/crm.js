@@ -14,6 +14,15 @@ const searchBox = document.getElementById("search");
 const sortSel = document.getElementById("sort");
 let leads = [];
 
+// This visitor's chat session id, stored by the chat page (app.js) on the same
+// origin. The API lists and moves only that session's leads; no id, no leads.
+const SESSION_KEY = "amberstone.chat_session_id";
+function sessionHeaders() {
+  let id = null;
+  try { id = localStorage.getItem(SESSION_KEY); } catch { /* storage blocked */ }
+  return id ? { "X-Session-Id": id } : {};
+}
+
 function esc(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
                   .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
@@ -142,7 +151,7 @@ function wire() {
       try {
         const res = await fetch(`/api/crm/leads/${id}/stage`, {
           method: "PATCH",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...sessionHeaders() },
           body: JSON.stringify({ status: stage }),
         });
         if (!res.ok) throw new Error(res.status);
@@ -155,7 +164,7 @@ function wire() {
 }
 
 async function load() {
-  const res = await fetch("/api/crm/leads");
+  const res = await fetch("/api/crm/leads", { headers: sessionHeaders() });
   leads = res.ok ? await res.json() : [];
   render();
 }

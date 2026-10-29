@@ -4,14 +4,22 @@ The bundled static frontend (static/lead.html, static/crm.html) is served from
 this same app for local dev, so those pages call the API same-origin. The
 production frontends are static copies hosted on GitHub Pages that call this
 API cross-origin, so CORS is enabled and the JSON API routes are gated behind
-an X-API-Key header (see app/deps.py). The HTML routes stay ungated.
+an X-API-Key header (see app/deps.py). The HTML routes stay ungated. The
+/admin routes (app/admin.py) need the admin JWT from POST /admin/login
+(app/admin_auth.py) instead, never the API key.
+
+The API key is public (it ships in the chat page), so it is only a bot gate.
+The CRM routes return and change only the leads of the caller's own chat
+session (X-Session-Id); listing every lead is /admin/leads, behind the JWT.
 """
 
 import logging
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,11 +27,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi import HTTPException
 from sqlalchemy import select
 
+from . import admin, admin_auth
+from .admin import UUID_RE
 from .agent.client import generate_reply
 from .bootstrap import init_models
 from .chatlog import log_turn
 from .config import settings
 from .db import SessionLocal
+from .deps import client_ip as _client_ip
 from .deps import require_api_key
 from .models import Lead
 from .ratelimit import check_and_count
@@ -41,6 +52,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Amberstone Realty — Enquiry Assistant", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+# Admin API (bearer JWT from POST /admin/login), read by bytcra-admin.
+app.include_router(admin_auth.router)
+app.include_router(admin.router)
 
 # Explicit CORS allowlist when set; "*" only when unset (dev). Production .env
 # should set ALLOWED_ORIGINS to the deployed frontend origin(s) (e.g. the
@@ -97,7 +111,7 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-# ---- CRM-lite (business-facing, demo: no auth) ----
+# ---- CRM-lite (demo: each visitor sees only their own chat's leads) ----
 
 
 @app.get("/crm", include_in_schema=False)
@@ -125,11 +139,33 @@ def _lead_out(lead: Lead) -> LeadOut:
     )
 
 
+def visitor_session(x_session_id: Annotated[str | None, Header()] = None) -> str | None:
+    """The caller's own chat session id, from the X-Session-Id header (crm.js
+    sends the id the chat page stored). Only a canonical lowercase UUID counts,
+    the shape of the ids the server issues; anything else is no session, which
+    sees no leads. leads.session_id is set server-side by save_lead."""
+    if x_session_id and re.fullmatch(UUID_RE, x_session_id):
+        return x_session_id
+    return None
+
+
+VisitorSession = Annotated[str | None, Depends(visitor_session)]
+
+
 @app.get("/api/crm/leads", response_model=list[LeadOut], dependencies=[Depends(require_api_key)])
-async def crm_leads() -> list[LeadOut]:
+async def crm_leads(session_id: VisitorSession) -> list[LeadOut]:
+    """The caller's own leads only. No session (or a non-UUID one) gets []."""
+    if session_id is None:
+        return []
     async with SessionLocal() as s:
         rows = (
-            (await s.execute(select(Lead).order_by(Lead.score.desc(), Lead.id.desc())))
+            (
+                await s.execute(
+                    select(Lead)
+                    .where(Lead.session_id == session_id)
+                    .order_by(Lead.score.desc(), Lead.id.desc())
+                )
+            )
             .scalars()
             .all()
         )
@@ -141,27 +177,17 @@ async def crm_leads() -> list[LeadOut]:
     response_model=LeadOut,
     dependencies=[Depends(require_api_key)],
 )
-async def crm_move_stage(lead_id: int, body: StageUpdate) -> LeadOut:
+async def crm_move_stage(lead_id: int, body: StageUpdate, session_id: VisitorSession) -> LeadOut:
+    """Move one of the caller's own leads. Another session's lead, or any lead
+    without a session, is a 404 like a missing one, so ids can't be probed."""
     async with SessionLocal() as s:
-        lead = await s.get(Lead, lead_id)
-        if lead is None:
+        lead = await s.get(Lead, lead_id) if session_id else None
+        if lead is None or lead.session_id != session_id:
             raise HTTPException(status_code=404, detail="lead not found")
         lead.status = body.status
         await s.commit()
         await s.refresh(lead)
     return _lead_out(lead)
-
-
-def _client_ip(request: Request) -> str:
-    """Best-effort client IP. Trust X-Forwarded-For only behind a real proxy
-    (config.trust_proxy); otherwise a client could spoof it to dodge the cap."""
-    if settings.trust_proxy:
-        xff = request.headers.get("x-forwarded-for")
-        if xff:
-            # Rightmost entry = the IP our own proxy observed and appended;
-            # leftmost entries are client-supplied and spoofable.
-            return xff.split(",")[-1].strip()
-    return request.client.host if request.client else "unknown"
 
 
 @app.post("/api/chat", response_model=ChatResponse, dependencies=[Depends(require_api_key)])
@@ -182,16 +208,20 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
             ),
             session_id=req.session_id,
         )
+    error: str | None = None
     try:
         reply, session_id = await generate_reply(req.message, resume=req.session_id)
-    except Exception:
+    except Exception as exc:
         logger.exception("chat generation failed")
+        # Only the class name is stored (an error row for the admin API),
+        # never the message, which could carry internals.
+        error = type(exc).__name__
         reply, session_id = ("Sorry, I'm having trouble right now. Please try again.", req.session_id)
     reply = reply or "Sorry, I didn't catch that. Try again?"
 
     # Persist the turn (best-effort — never fail the reply over a logging error).
     try:
-        await log_turn(session_id, client_ip, req.message, reply)
+        await log_turn(session_id, client_ip, req.message, reply, error=error)
     except Exception:
         logger.warning("chat logging failed", exc_info=True)
 

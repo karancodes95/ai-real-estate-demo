@@ -88,14 +88,29 @@ demo-only risks, and what to change before pointing this at real data.
 | GET   | `/health` | Liveness probe |
 | POST  | `/api/chat` | Visitor message in, assistant reply + `session_id` out |
 | GET   | `/crm` | CRM-lite opportunities board (business-facing) |
-| GET   | `/api/crm/leads` | All captured leads, scored, newest/highest first |
-| PATCH | `/api/crm/leads/{id}/stage` | Move a lead between pipeline stages |
+| GET   | `/api/crm/leads` | The caller's own leads (`X-Session-Id`), scored, highest first |
+| PATCH | `/api/crm/leads/{id}/stage` | Move one of the caller's own leads between stages |
+| POST  | `/admin/login` | `{password}` in, `{token, expires_at}` out (7-day admin JWT) |
+| POST  | `/admin/logout` | No-op (the token is stateless) |
+| GET   | `/admin/metrics?scope=today\|all` | Dashboard KPIs (same fields as the clinic demo; `bounce_rate_today` is null) |
+| GET   | `/admin/sessions?limit&since` | Chat sessions (UUID ids only), newest activity first |
+| GET   | `/admin/sessions/{uuid}` | One session's transcript, error turns included |
+| GET   | `/admin/leads?limit&since` | Leads in the CRM's shape, best score first, ISO times |
 
-The CRM surface is intentionally unauthenticated in this demo (see SECURITY.md).
+The `/admin` routes need `Authorization: Bearer <token>` from `/admin/login`
+(never the API key). They are read by bytcra-admin. Fields this demo does not
+measure come back as null: `bounce_rate_today`, `referrer_tag`, `country`,
+`expires_at`, and the `stage` of non-error turns.
+
+The CRM routes show each visitor only the leads from their own chat: they
+need `X-Session-Id`, the chat's session id (the chat page stores it in
+localStorage and the CRM page sends it). No session, or a non-UUID one, gets
+`[]` or a 404. The lead's session id is set server-side by `save_lead`.
+Every lead across sessions is only on `/admin/leads` (see SECURITY.md).
 
 ## Running it locally
 
-Prerequisites: Python 3.12+ and Postgres running locally. For the Claude Agent
+Prerequisites: Python 3.14 (the locks also install on 3.12) and Postgres running locally. For the Claude Agent
 SDK you need a working Claude Code login on the machine (or
 `CLAUDE_CODE_OAUTH_TOKEN` set). No API key is used.
 
@@ -103,31 +118,53 @@ SDK you need a working Claude Code login on the machine (or
    ```bash
    createdb lead_to_lease
    ```
-2. Create a virtualenv and install dependencies:
+2. Create a virtualenv (Python 3.14) and install the hash-locked
+   dependencies (wheels only; add `-r requirements-dev.txt` for the tests):
    ```bash
-   python3 -m venv .venv
-   .venv/bin/pip install -r requirements.txt
+   python3.14 -m venv .venv
+   .venv/bin/pip install --require-hashes --only-binary=:all: \
+     -r requirements.txt -r requirements-dev.txt
    ```
+   To change a dependency, edit `requirements.in` / `requirements-dev.in` and
+   re-lock (see their headers).
 3. Configure the environment:
    ```bash
    cp .env.example .env
-   # set DATABASE_URL; leave ZOHO_EMAIL empty to skip real email in dev
+   # set DATABASE_URL and API_KEY; leave ZOHO_EMAIL empty to skip real email in dev
+   # admin API: ADMIN_PASSWORD_HASH from the helper below, a random ADMIN_JWT_SECRET
+   .venv/bin/python tool/hash_admin_password.py
    ```
 4. Run the API (serves the site and the chat endpoint on :8091):
    ```bash
    ./run.sh
    ```
-5. Open http://localhost:8091 and chat, then open http://localhost:8091/crm to
-   see the captured lead on the pipeline board.
+5. Open http://localhost:8091 and chat, then open http://localhost:8091/crm in
+   the same browser to see the captured lead on the pipeline board (it shows
+   the leads of that browser's latest chat only).
+6. Run the tests (a throwaway `lead_to_lease_test` database on the local
+   Postgres, created and dropped by the run; the Agent SDK is mocked):
+   ```bash
+   .venv/bin/pytest -q
+   ```
 
 ## Project structure
 
 ```
 real-estate-backend/
 ├── run.sh                Start uvicorn on :8091
-├── requirements.txt      Pinned dependencies
+├── requirements.in       Runtime inputs (top-level pins)
+├── requirements.txt      Hash-locked runtime dependencies
+├── requirements-dev.in   Test inputs
+├── requirements-dev.txt  Hash-locked test dependencies
+├── pytest.ini            Test config (asyncio)
+├── tool/
+│   └── hash_admin_password.py  argon2id hash of the admin password for .env
+├── tests/                Admin API, login, error logging (ASGITransport, test DB)
 ├── app/
 │   ├── main.py           FastAPI app: static site, /api/chat, CRM routes, headers
+│   ├── admin_auth.py     POST /admin/login (argon2id + JWT), the bearer gate
+│   ├── admin.py          /admin metrics, sessions and leads for bytcra-admin
+│   ├── deps.py           API-key gate and client IP
 │   ├── config.py         Pydantic settings (env-driven)
 │   ├── db.py             Async engine + session factory + declarative Base
 │   ├── bootstrap.py      Create tables on startup
@@ -135,7 +172,7 @@ real-estate-backend/
 │   ├── schemas.py        HTTP request/response contracts + pipeline stages
 │   ├── scoring.py        Deterministic 0-100 lead score
 │   ├── ratelimit.py      Postgres-backed per-IP daily cap (atomic)
-│   ├── chatlog.py        Persist each chat turn
+│   ├── chatlog.py        Persist each chat turn (plus an error row on failure)
 │   ├── emailer.py        Day-0 confirmation email (SMTP over SSL, soft-fail)
 │   ├── agent/            Claude Agent SDK: client, prompts, tool registry, save_lead
 │   └── static/           Visitor site (lead.html + app.js) and CRM (crm.html + crm.js)

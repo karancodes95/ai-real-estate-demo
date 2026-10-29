@@ -1,0 +1,16 @@
+# Runtime inputs for requirements.txt (the hash lock). Edit here, then re-lock:
+#   pip install --dry-run --report report.json --only-binary=:all: \
+#     --uploaded-prior-to P14D -r requirements.in
+# and write every resolved version with all its wheel hashes into requirements.txt.
+# Pinned to match ask_clinic's verified working set (Agent SDK stack).
+fastapi==0.141.1
+uvicorn==0.52.3
+pydantic==2.13.4
+pydantic-settings==2.15.0
+sqlalchemy==2.0.52
+greenlet==3.5.5  # required by SQLAlchemy async (not auto-installed on Python 3.14)
+asyncpg==0.31.0
+claude-agent-sdk==0.2.140
+# Admin API login (argon2id password hash + HS256 JWT), approved 2026-10-29.
+argon2-cffi==25.1.0
+pyjwt==2.15.1

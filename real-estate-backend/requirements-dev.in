@@ -1,0 +1,9 @@
+# Test/dev inputs for requirements-dev.txt (hash lock, installed on top of
+# requirements.txt). Approved 2026-10-29. Re-lock the same way as requirements.in,
+# keeping every version requirements.txt already pins.
+pytest==9.1.1
+pytest-asyncio==1.4.0
+httpx==0.28.1
+# Security-fix exception to the 14-day rule: first release fixing
+# GHSA-6q48-6c7w-9gw2 / PYSEC-2026-4320 (same exception as bytcra-admin).
+certifi==2026.10.19

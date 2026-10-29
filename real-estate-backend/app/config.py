@@ -39,6 +39,20 @@ class Settings(BaseSettings):
     # client could spoof the header to dodge the cap. Set true in prod (VPS/proxy).
     trust_proxy: bool = False
 
+    # Admin API login (POST /admin/login, see app/admin_auth.py), the same
+    # scheme as the clinic and winery demos. Separate from api_key, which ships
+    # in the public client bundle and must never unlock /admin.
+    # admin_password_hash: argon2id hash of the admin password, from
+    #   .venv/bin/python tool/hash_admin_password.py. Empty = login is off and
+    #   every /admin call answers 401.
+    # admin_jwt_secret: HMAC key signing the session JWT (HS256), 32+ random
+    #   bytes, e.g. python -c "import secrets; print(secrets.token_hex(32))".
+    #   Rotating it signs every admin out.
+    # admin_session_ttl_hours: how long a freshly issued token is valid.
+    admin_password_hash: str = ""
+    admin_jwt_secret: str = ""
+    admin_session_ttl_hours: int = 168  # 7 days
+
     @field_validator("api_key")
     @classmethod
     def _api_key_must_be_set(cls, v: str) -> str:
