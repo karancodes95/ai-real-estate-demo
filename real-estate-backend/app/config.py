@@ -35,8 +35,10 @@ class Settings(BaseSettings):
     # Abuse guard: max chat messages per client IP per day (0 = unlimited).
     chat_daily_ip_cap: int = 10
 
-    # Only trust X-Forwarded-For when behind a proxy that sets it; otherwise a
-    # client could spoof the header to dodge the cap. Set true in prod (VPS/proxy).
+    # Trust the proxy's X-Real-IP (and CF-IPCountry) only when this is on AND
+    # the socket peer is loopback (nginx on the same host); X-Forwarded-For is
+    # never read. Otherwise a client could spoof the header to dodge the cap.
+    # Set true in prod (VPS/proxy).
     trust_proxy: bool = False
 
     # Admin API login (POST /admin/login, see app/admin_auth.py), the same

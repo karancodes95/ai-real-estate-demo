@@ -11,3 +11,6 @@ real-estate-backend/.env.*
 v1_plan.md
 # CRM admin surface withheld from the public demo for now
 real-estate-admin/
+
+# Local DB dumps (never commit)
+backups/

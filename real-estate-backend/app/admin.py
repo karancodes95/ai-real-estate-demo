@@ -1,28 +1,28 @@
 """Admin read API for bytcra-admin: the clinic/winery demos' /admin routes
-(same params, limits and field names), computed from this demo's tables.
+(same params, limits, field names and SQL), computed from this demo's
+``sessions`` and ``events`` tables (app/models.py) like the clinic demo's.
 
     GET /admin/metrics?scope=today|all
     GET /admin/sessions?limit=1..500&since=all|today|24h|7d
     GET /admin/sessions/{session_id}      (UUID)
     GET /admin/leads?limit=1..500&since=today|24h|7d|all   (this demo's LeadOut)
 
-There is no sessions table: a session is the chat_messages rows sharing one
-Claude Agent SDK session_id. Only UUID-shaped ids count as sessions; NULL or
-other ids (a failed turn logs whatever the client sent) are left out of the
-session routes. Messages are role="user" rows, errors role="error" rows.
+A session is one visit, opened by POST /api/session (one per IP while it is
+unexpired). A visitor is a distinct session IP, an engaged visitor one that
+asked a question (a question_asked event), and the bounce rate the share of
+visitors who never did. Transcripts replay the question_asked, answer_streamed
+and error events; only error turns carry a stage. Visits from before the
+sessions table existed are only in chat_messages and are not listed here.
 
-What this demo does not measure comes back as null, never a made-up number:
-bounce_rate_today (the static site sends no page-view signal, so every visitor
-seen has chatted), referrer_tag and country (not captured), expires_at (SDK
-sessions do not expire here) and the stage of non-error turns.
-
-Times: the columns are timestamps without zone, written by the DB's now(), so
-they are compared against LOCALTIMESTAMP and returned as ISO 8601 with an
-offset via ``AT TIME ZONE current_setting('TimeZone')``.
+Times: sessions and events are timestamptz (compared against NOW()); leads
+are timestamps without zone, written by the DB's now(), so they are compared
+against LOCALTIMESTAMP and returned as ISO 8601 with an offset via
+``AT TIME ZONE current_setting('TimeZone')``.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from uuid import UUID
 
@@ -36,12 +36,7 @@ from .schemas import LeadOut
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(verify_admin)])
 
-VERTICAL = "real_estate"
-# Canonical lowercase UUID, the form the SDK issues and str(UUID) produces.
-UUID_RE = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-# The one place a turn can fail (app.main.chat around generate_reply).
-ERROR_STAGE = "generate_reply"
-
+# For the leads route (naive timestamps).
 _TODAY = "date_trunc('day', LOCALTIMESTAMP)"
 # A naive column as an aware timestamp (asyncpg returns it tz-aware).
 _TZ = "AT TIME ZONE current_setting('TimeZone')"
@@ -49,6 +44,11 @@ _TZ = "AT TIME ZONE current_setting('TimeZone')"
 
 def _iso(value: datetime) -> str:
     return value.isoformat()
+
+
+def _ip(value) -> str | None:
+    # asyncpg returns INET as an ipaddress object.
+    return str(value) if value is not None else None
 
 
 class Metrics(BaseModel):
@@ -61,7 +61,7 @@ class Metrics(BaseModel):
     errors_24h: int  # always last 24h (scope-independent)
     unique_visitors_today: int
     engaged_visitors_today: int
-    bounce_rate_today: float | None  # not measured here: always null
+    bounce_rate_today: float  # 0..1, computed over unique IPs
     avg_messages_per_engaged: float
 
 
@@ -71,8 +71,8 @@ class SessionRow(BaseModel):
     last_active: str
     vertical: str
     ip: str | None = None
-    referrer_tag: str | None = None  # not captured: always null
-    country: str | None = None  # not captured: always null
+    referrer_tag: str | None = None
+    country: str | None = None
     events: int
     messages: int
 
@@ -81,14 +81,14 @@ class TranscriptTurn(BaseModel):
     ts: str
     role: str  # "user" | "assistant" | "error"
     text: str
-    stage: str | None = None  # ERROR_STAGE on error turns, else null
+    stage: str | None = None  # set on error turns only
 
 
 class SessionDetail(BaseModel):
     id: str
     created_at: str
     last_active: str
-    expires_at: str | None = None  # no expiry here: always null
+    expires_at: str
     vertical: str
     ip: str | None = None
     referrer_tag: str | None = None
@@ -102,47 +102,67 @@ async def metrics(
 ) -> Metrics:
     """KPIs for the admin dashboard.
 
-    scope="today" (default): rows written today (DB-local day). A visitor is
-    a distinct client IP with any chat row in scope; an engaged visitor one
-    with at least one message. A session counts on the day of its first row.
-    scope="all": the same over every row kept.
+    scope="today" (default): metrics are filtered to today's activity.
+      Visitor = distinct IP with any activity today (session created today
+      OR any event timestamped today). Returning visitors whose session was
+      created on a prior day are still counted, because the backend reuses
+      sessions per IP for 24h.
+    scope="all": the same metrics over every row kept.
     `active_sessions` (last 15 min) and `errors_24h` (last 24h) are always
     windowed regardless of scope - they're live-ops signals, not totals.
     """
-    rows_filter = f"WHERE created_at >= {_TODAY}" if scope == "today" else ""
-    sessions_filter = f"WHERE first_at >= {_TODAY}" if scope == "today" else ""
+    if scope == "today":
+        ip_filter = (
+            "AND (s.created_at >= date_trunc('day', NOW()) "
+            "     OR e.ts        >= date_trunc('day', NOW()))"
+        )
+        msg_filter = "AND e.ts >= date_trunc('day', NOW())"
+        sessions_filter = "WHERE created_at >= date_trunc('day', NOW())"
+        events_filter = "AND ts >= date_trunc('day', NOW())"
+    else:
+        ip_filter = ""
+        msg_filter = ""
+        sessions_filter = ""
+        events_filter = ""
+
     sql = f"""
-        WITH scoped AS (
-          SELECT role, client_ip FROM chat_messages {rows_filter}
-        ),
-        sessions AS (
-          SELECT session_id, MIN(created_at) AS first_at, MAX(created_at) AS last_at
-          FROM chat_messages
-          WHERE session_id ~ :uuid_re
-          GROUP BY session_id
+        WITH visitor_ips AS (
+          SELECT DISTINCT s.ip
+          FROM sessions s
+          LEFT JOIN events e ON e.session_id = s.id
+          WHERE s.ip IS NOT NULL
+            {ip_filter}
         ),
         msgs_by_ip AS (
-          SELECT client_ip, COUNT(*)::int AS msgs
-          FROM scoped
-          WHERE role = 'user' AND client_ip <> ''
-          GROUP BY client_ip
+          SELECT s.ip, COUNT(*)::int AS msgs
+          FROM events e
+          JOIN sessions s ON s.id = e.session_id
+          WHERE e.type = 'question_asked'
+            AND s.ip IS NOT NULL
+            {msg_filter}
+          GROUP BY s.ip
         )
         SELECT
           (SELECT COUNT(*) FROM sessions {sessions_filter}) AS sessions_today,
-          (SELECT COUNT(*) FROM scoped WHERE role = 'user') AS messages_today,
-          (SELECT COUNT(DISTINCT client_ip) FROM scoped WHERE client_ip <> '')
-            AS unique_visitors_today,
+          (SELECT COUNT(*) FROM events
+             WHERE type = 'question_asked' {events_filter}) AS messages_today,
+          (SELECT COUNT(*) FROM visitor_ips) AS unique_visitors_today,
           (SELECT COUNT(*) FROM msgs_by_ip) AS engaged_visitors_today,
           (SELECT COALESCE(AVG(msgs)::float, 0) FROM msgs_by_ip)
             AS avg_messages_per_engaged,
           (SELECT COUNT(*) FROM sessions
-             WHERE last_at >= LOCALTIMESTAMP - INTERVAL '15 minutes') AS active_sessions,
-          (SELECT COUNT(*) FROM chat_messages
-             WHERE role = 'error'
-               AND created_at >= LOCALTIMESTAMP - INTERVAL '24 hours') AS errors_24h
+             WHERE last_active >= NOW() - INTERVAL '15 minutes'
+               AND expires_at > NOW()) AS active_sessions,
+          (SELECT COUNT(*) FROM events
+             WHERE type = 'error'
+               AND ts >= NOW() - INTERVAL '24 hours') AS errors_24h
     """
     async with SessionLocal() as s:
-        row = (await s.execute(text(sql), {"uuid_re": UUID_RE})).mappings().one()
+        row = (await s.execute(text(sql))).mappings().one()
+
+    visitors = row["unique_visitors_today"] or 0
+    engaged = row["engaged_visitors_today"] or 0
+    bounce_rate = (1.0 - (engaged / visitors)) if visitors > 0 else 0.0
 
     return Metrics(
         scope=scope,
@@ -150,9 +170,9 @@ async def metrics(
         messages_today=row["messages_today"] or 0,
         active_sessions=row["active_sessions"] or 0,
         errors_24h=row["errors_24h"] or 0,
-        unique_visitors_today=row["unique_visitors_today"] or 0,
-        engaged_visitors_today=row["engaged_visitors_today"] or 0,
-        bounce_rate_today=None,
+        unique_visitors_today=visitors,
+        engaged_visitors_today=engaged,
+        bounce_rate_today=round(bounce_rate, 4),
         avg_messages_per_engaged=round(row["avg_messages_per_engaged"] or 0.0, 2),
     )
 
@@ -162,44 +182,47 @@ async def list_sessions(
     limit: int = Query(default=500, ge=1, le=500),
     since: str = Query(default="all", pattern="^(all|today|24h|7d)$"),
 ) -> list[SessionRow]:
-    # "today" / "24h" / "7d" mean *active in that window* (like the clinic
-    # demo): first or last row inside it. "all" returns every session.
-    def window(start: str) -> str:
-        return f"(MIN(created_at) >= {start} OR MAX(created_at) >= {start})"
-
-    having = {
+    # "Today" / "24h" / "7d" mean *active in that window*, not *created in*:
+    # with IP-based session reuse, a returning visitor keeps a session row
+    # created on a prior day. "all" returns every session (capped by `limit`).
+    where = {
         "all": "TRUE",
-        "today": window(_TODAY),
-        "24h": window("LOCALTIMESTAMP - INTERVAL '24 hours'"),
-        "7d": window("LOCALTIMESTAMP - INTERVAL '7 days'"),
+        "today": "(s.created_at >= date_trunc('day', NOW())"
+                 " OR s.last_active >= date_trunc('day', NOW()))",
+        "24h": "(s.created_at >= NOW() - INTERVAL '24 hours'"
+               " OR s.last_active >= NOW() - INTERVAL '24 hours')",
+        "7d": "(s.created_at >= NOW() - INTERVAL '7 days'"
+              " OR s.last_active >= NOW() - INTERVAL '7 days')",
     }[since]
     sql = f"""
         SELECT
-          session_id AS id,
-          MIN(created_at) {_TZ} AS created_at,
-          MAX(created_at) {_TZ} AS last_active,
-          (ARRAY_AGG(client_ip ORDER BY created_at DESC, id DESC)
-             FILTER (WHERE client_ip <> ''))[1] AS ip,
-          COUNT(*) AS events,
-          COUNT(*) FILTER (WHERE role = 'user') AS messages
-        FROM chat_messages
-        WHERE session_id ~ :uuid_re
-        GROUP BY session_id
-        HAVING {having}
-        ORDER BY MAX(created_at) DESC, session_id
+          s.id,
+          s.created_at,
+          s.last_active,
+          s.vertical,
+          s.ip,
+          s.referrer_tag,
+          s.country,
+          COUNT(e.id) AS events,
+          COUNT(e.id) FILTER (WHERE e.type = 'question_asked') AS messages
+        FROM sessions s
+        LEFT JOIN events e ON e.session_id = s.id
+        WHERE {where}
+        GROUP BY s.id
+        ORDER BY s.last_active DESC
         LIMIT :limit
     """
     async with SessionLocal() as s:
-        rows = (
-            (await s.execute(text(sql), {"uuid_re": UUID_RE, "limit": limit})).mappings().all()
-        )
+        rows = (await s.execute(text(sql), {"limit": limit})).mappings().all()
     return [
         SessionRow(
-            id=r["id"],
+            id=str(r["id"]),
             created_at=_iso(r["created_at"]),
             last_active=_iso(r["last_active"]),
-            vertical=VERTICAL,
-            ip=r["ip"],
+            vertical=r["vertical"],
+            ip=_ip(r["ip"]),
+            referrer_tag=r["referrer_tag"],
+            country=r["country"],
             events=r["events"],
             messages=r["messages"],
         )
@@ -209,38 +232,60 @@ async def list_sessions(
 
 @router.get("/sessions/{session_id}", response_model=SessionDetail)
 async def session_detail(session_id: UUID) -> SessionDetail:
-    # str(UUID) is the canonical lowercase form, so only UUID-shaped ids match.
-    sql = f"""
-        SELECT role, content, client_ip, created_at {_TZ} AS ts
-        FROM chat_messages
-        WHERE session_id = :sid
-        ORDER BY created_at ASC, id ASC
-    """
     async with SessionLocal() as s:
-        rows = (await s.execute(text(sql), {"sid": str(session_id)})).mappings().all()
-    if not rows:
-        raise HTTPException(
-            status_code=404,
-            detail={"error": "session_not_found", "message": "session not found"},
-        )
+        visit = (
+            await s.execute(
+                text(
+                    "SELECT id, created_at, last_active, expires_at, vertical, "
+                    "       ip, referrer_tag, country "
+                    "FROM sessions WHERE id = :sid"
+                ),
+                {"sid": session_id},
+            )
+        ).mappings().one_or_none()
+        if visit is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "session_not_found", "message": "session not found"},
+            )
+        rows = (
+            await s.execute(
+                text(
+                    "SELECT ts, type, payload "
+                    "FROM events "
+                    "WHERE session_id = :sid "
+                    "  AND type IN ('question_asked', 'answer_streamed', 'error') "
+                    "ORDER BY ts ASC, id ASC"
+                ),
+                {"sid": session_id},
+            )
+        ).mappings().all()
 
-    turns = [
-        TranscriptTurn(
-            ts=_iso(r["ts"]),
-            role=r["role"],
-            text=r["content"],
-            stage=ERROR_STAGE if r["role"] == "error" else None,
-        )
-        for r in rows
-    ]
-    ips = [r["client_ip"] for r in rows if r["client_ip"]]
+    turns: list[TranscriptTurn] = []
+    for r in rows:
+        raw = r["payload"]
+        p = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        ts = _iso(r["ts"])
+        if r["type"] == "question_asked":
+            turns.append(TranscriptTurn(ts=ts, role="user", text=p.get("text", "")))
+        elif r["type"] == "answer_streamed":
+            turns.append(TranscriptTurn(ts=ts, role="assistant", text=p.get("text", "")))
+        elif r["type"] == "error":
+            turns.append(
+                TranscriptTurn(
+                    ts=ts, role="error", text=p.get("message", ""), stage=p.get("stage")
+                )
+            )
+
     return SessionDetail(
-        id=str(session_id),
-        created_at=_iso(rows[0]["ts"]),
-        last_active=_iso(rows[-1]["ts"]),
-        expires_at=None,
-        vertical=VERTICAL,
-        ip=ips[-1] if ips else None,
+        id=str(visit["id"]),
+        created_at=_iso(visit["created_at"]),
+        last_active=_iso(visit["last_active"]),
+        expires_at=_iso(visit["expires_at"]),
+        vertical=visit["vertical"],
+        ip=_ip(visit["ip"]),
+        referrer_tag=visit["referrer_tag"],
+        country=visit["country"],
         turns=turns,
     )
 

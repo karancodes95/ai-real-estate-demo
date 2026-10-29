@@ -1,8 +1,9 @@
 """Persist each chat turn to Postgres — one row per message (user + assistant).
 
 A turn whose reply generation failed also gets a ``role="error"`` row, between
-the two, holding only the exception's class name (never its message). The
-admin API counts and replays those rows like the clinic demo's error events.
+the two, holding only the exception's class name (never its message). Rows
+carry the visitor's server-issued session id. This is the plain transcript;
+the admin API reads the ``events`` table instead (app/events.py).
 
 Best-effort: the caller wraps this so a logging failure never breaks a reply.
 """

@@ -1,6 +1,7 @@
 """GET /admin/metrics, /admin/sessions, /admin/sessions/{id} and /admin/leads:
-shapes (the clinic demo's field names), the UUID filter, the null fields,
-the windows and the params."""
+shapes (the clinic demo's field names), every metrics field computed from the
+sessions and events tables the way the clinic demo does, the windows and the
+params."""
 
 import re
 from datetime import datetime, timedelta, timezone
@@ -8,7 +9,7 @@ from uuid import uuid4
 
 import pytest
 
-from conftest import add_lead, add_message
+from conftest import add_event, add_lead, add_message, add_session, db_day_changes
 
 METRICS_KEYS = {
     "scope", "sessions_today", "messages_today", "active_sessions", "errors_24h",
@@ -38,16 +39,20 @@ def _aware(value: str) -> datetime:
     return parsed
 
 
-def _sid() -> str:
-    return str(uuid4())
+def _near(value: str, minutes_ago: float) -> bool:
+    now = datetime.now(timezone.utc)
+    return abs((now - _aware(value)) - timedelta(minutes=minutes_ago)) < timedelta(minutes=1)
 
 
-async def _turn(sid, ip="10.0.0.1", minutes_ago=0.0, error=False):
-    """One chat turn as app.chatlog writes it."""
-    await add_message(sid, "user", "question", ip, minutes_ago)
+async def _turn(sid, minutes_ago=0.0, error=False, text="question"):
+    """One chat turn's events as app.main.chat logs them."""
+    await add_event(sid, "question_asked", {"text": text}, minutes_ago)
     if error:
-        await add_message(sid, "error", "RuntimeError", ip, minutes_ago)
-    await add_message(sid, "assistant", "answer", ip, minutes_ago)
+        await add_event(sid, "error", {"stage": "generate_reply", "message": "RuntimeError"},
+                        minutes_ago)
+        return
+    await add_event(sid, "answer_streamed", {"text": "answer", "chars": 6, "ms": 5}, minutes_ago)
+    await add_event(sid, "turn_complete", {"total_ms": 5}, minutes_ago)
 
 
 # ---- /admin/metrics ----
@@ -59,48 +64,80 @@ async def test_metrics_empty(client, auth):
     assert r.json() == {
         "scope": "today", "sessions_today": 0, "messages_today": 0,
         "active_sessions": 0, "errors_24h": 0, "unique_visitors_today": 0,
-        "engaged_visitors_today": 0, "bounce_rate_today": None,
+        "engaged_visitors_today": 0, "bounce_rate_today": 0.0,
         "avg_messages_per_engaged": 0.0,
     }
 
 
 async def test_metrics_today_and_all(client, auth):
-    a, b, old = _sid(), _sid(), _sid()
-    await _turn(a, ip="10.0.0.1", minutes_ago=1)          # active now
-    await _turn(a, ip="10.0.0.1", minutes_ago=1)
-    await _turn(b, ip="10.0.0.2", minutes_ago=30, error=True)
-    await _turn(old, ip="10.0.0.3", minutes_ago=3 * 24 * 60, error=True)  # 3 days ago
-    # Not a session (NULL / client-sent id) but still a visitor's message.
-    await _turn(None, ip="10.0.0.4", minutes_ago=2)
-    await _turn("not-a-uuid", ip="10.0.0.4", minutes_ago=2)
+    if await db_day_changes(minutes_ago=30):
+        pytest.skip("too close to the DB's midnight for a 'today' window")
+    # Two sessions on one IP, chatting now.
+    a = await add_session("10.0.0.1", minutes_ago=1, active_minutes_ago=0)
+    await _turn(a, 1)
+    await _turn(a, 1)
+    d = await add_session("10.0.0.1", minutes_ago=2)
+    await _turn(d, 2)
+    # Asked once, failed, 30 min ago (not active any more).
+    b = await add_session("10.0.0.2", minutes_ago=30)
+    await _turn(b, 30, error=True)
+    # Opened the page today and never asked: a bounce.
+    await add_session("10.0.0.3", minutes_ago=5)
+    # No IP: a session and a message, but not a visitor.
+    e = await add_session(None, minutes_ago=1)
+    await _turn(e, 1)
+    # Returning visitor: session from 2 days ago, asked today.
+    f = await add_session("10.0.0.5", minutes_ago=2 * 24 * 60, active_minutes_ago=10)
+    await _turn(f, 10)
+    # 3 days ago, expired: asked and failed then.
+    old = await add_session("10.0.0.4", minutes_ago=3 * 24 * 60, expires_in_minutes=-2 * 24 * 60)
+    await _turn(old, 3 * 24 * 60, error=True)
+    # Touched 5 min ago but expired a minute ago: not active, not a visitor today.
+    await add_session("10.0.0.6", minutes_ago=2 * 24 * 60, active_minutes_ago=5,
+                      expires_in_minutes=-1)
 
     today = (await client.get("/admin/metrics", headers=auth)).json()
     assert set(today) == METRICS_KEYS
-    # Midnight may fall between rows written minutes apart; skip if so.
-    first_today = datetime.now() - timedelta(minutes=30)
-    if first_today.date() != datetime.now().date():
-        pytest.skip("too close to midnight for a 'today' window")
     assert today["scope"] == "today"
-    assert today["sessions_today"] == 2          # a, b (UUID ids only)
-    assert today["messages_today"] == 5          # user rows today, any id
-    assert today["unique_visitors_today"] == 3   # .1 .2 .4
-    assert today["engaged_visitors_today"] == 3
-    assert today["avg_messages_per_engaged"] == round(5 / 3, 2)
-    assert today["active_sessions"] == 1         # only a, in the last 15 min
+    assert today["sessions_today"] == 5          # a, d, b, the bounce, e
+    assert today["messages_today"] == 6          # question_asked today, any session
+    assert today["unique_visitors_today"] == 4   # .1 .2 .3 .5
+    assert today["engaged_visitors_today"] == 3  # .1 .2 .5
+    assert today["bounce_rate_today"] == 0.25    # 1 - 3/4
+    assert today["avg_messages_per_engaged"] == round(5 / 3, 2)  # .1: 3, .2: 1, .5: 1
+    assert today["active_sessions"] == 5         # a, d, the bounce, e, f
     assert today["errors_24h"] == 1              # b's; old's is 3 days ago
-    assert today["bounce_rate_today"] is None
 
     every = (await client.get("/admin/metrics", params={"scope": "all"}, headers=auth)).json()
     assert every["scope"] == "all"
-    assert every["sessions_today"] == 3
-    assert every["messages_today"] == 6
-    assert every["unique_visitors_today"] == 4
-    assert every["engaged_visitors_today"] == 4
+    assert every["sessions_today"] == 8
+    assert every["messages_today"] == 7
+    assert every["unique_visitors_today"] == 6   # .1 to .6
+    assert every["engaged_visitors_today"] == 4  # .1 .2 .4 .5
+    assert every["bounce_rate_today"] == round(1 - 4 / 6, 4)
     assert every["avg_messages_per_engaged"] == 1.5
     # Live-ops windows do not change with scope.
-    assert every["active_sessions"] == 1
+    assert every["active_sessions"] == 5
     assert every["errors_24h"] == 1
-    assert every["bounce_rate_today"] is None
+
+
+async def test_metrics_bounce_rate_is_zero_when_every_visitor_asks(client, auth):
+    sid = await add_session("10.0.0.1")
+    await _turn(sid)
+    body = (await client.get("/admin/metrics", headers=auth)).json()
+    assert body["unique_visitors_today"] == body["engaged_visitors_today"] == 1
+    assert body["bounce_rate_today"] == 0.0
+
+
+async def test_metrics_only_question_events_are_messages(client, auth):
+    sid = await add_session("10.0.0.1")
+    for type_ in ("session_created", "answer_streamed", "turn_complete", "error"):
+        await add_event(sid, type_)
+    body = (await client.get("/admin/metrics", headers=auth)).json()
+    assert body["messages_today"] == 0
+    assert body["engaged_visitors_today"] == 0
+    assert body["bounce_rate_today"] == 1.0
+    assert body["errors_24h"] == 1
 
 
 async def test_metrics_scope_is_validated(client, auth):
@@ -110,39 +147,38 @@ async def test_metrics_scope_is_validated(client, auth):
 # ---- /admin/sessions ----
 
 
-async def test_sessions_rows_are_uuid_only_newest_first(client, auth):
-    a, b = _sid(), _sid()
-    await _turn(a, ip="10.0.0.1", minutes_ago=60)
-    await _turn(a, ip="10.0.0.9", minutes_ago=5)        # latest IP wins
-    await _turn(b, ip="10.0.0.2", minutes_ago=20, error=True)
-    await _turn(None, minutes_ago=1)
-    await _turn("not-a-uuid", minutes_ago=1)
-    await _turn(a.upper(), minutes_ago=1)                # not canonical lowercase
-    await _turn("x" * 36, minutes_ago=1)
+async def test_sessions_rows_newest_activity_first(client, auth):
+    a = await add_session("10.0.0.9", minutes_ago=60, active_minutes_ago=5,
+                          referrer_tag="linkedin", country="IN")
+    await _turn(a, 60)
+    await _turn(a, 5)
+    b = await add_session("2001:db8::7", minutes_ago=20)
+    await _turn(b, 20, error=True)
+    c = await add_session(None, minutes_ago=40)   # no events: a bounce
 
     r = await client.get("/admin/sessions", headers=auth)
     assert r.status_code == 200
     rows = r.json()
-    assert [row["id"] for row in rows] == [a, b]
-    first, second = rows
-    assert set(first) == SESSION_ROW_KEYS
-    assert first["vertical"] == "real_estate"
+    assert [row["id"] for row in rows] == [a, b, c]
+    first, second, third = rows
+    assert all(set(row) == SESSION_ROW_KEYS for row in rows)
+    assert all(row["vertical"] == "real_estate" for row in rows)
     assert first["ip"] == "10.0.0.9"
-    assert first["events"] == 4 and first["messages"] == 2
-    assert second["events"] == 3 and second["messages"] == 1   # user, error, assistant
+    assert first["referrer_tag"] == "linkedin" and first["country"] == "IN"
+    assert first["events"] == 6 and first["messages"] == 2
+    assert second["ip"] == "2001:db8::7"
+    assert second["referrer_tag"] is None and second["country"] is None
+    assert second["events"] == 2 and second["messages"] == 1   # question, error
+    assert third["ip"] is None and third["events"] == 0 and third["messages"] == 0
+    assert _near(first["last_active"], 5) and _near(first["created_at"], 60)
     for row in rows:
-        assert row["referrer_tag"] is None and row["country"] is None
         assert _aware(row["created_at"]) <= _aware(row["last_active"])
-    now = datetime.now(timezone.utc)
-    assert abs((now - _aware(first["last_active"])) - timedelta(minutes=5)) < timedelta(minutes=1)
-    assert abs((now - _aware(first["created_at"])) - timedelta(minutes=60)) < timedelta(minutes=1)
 
 
 async def test_sessions_limit_and_since(client, auth):
-    recent, week_old, ancient = _sid(), _sid(), _sid()
-    await _turn(recent, minutes_ago=10)
-    await _turn(week_old, minutes_ago=3 * 24 * 60)
-    await _turn(ancient, minutes_ago=30 * 24 * 60)
+    recent = await add_session(minutes_ago=10)
+    week_old = await add_session(minutes_ago=3 * 24 * 60)
+    ancient = await add_session(minutes_ago=30 * 24 * 60)
 
     async def ids(**params):
         r = await client.get("/admin/sessions", params=params, headers=auth)
@@ -155,14 +191,12 @@ async def test_sessions_limit_and_since(client, auth):
     assert await ids(since="7d") == [recent, week_old]
     assert await ids(limit=2) == [recent, week_old]
     assert await ids(limit=1, since="7d") == [recent]
-    if (datetime.now() - timedelta(minutes=10)).date() == datetime.now().date():
+    if not await db_day_changes(minutes_ago=10):
         assert await ids(since="today") == [recent]
 
 
 async def test_sessions_since_counts_activity_not_creation(client, auth):
-    sid = _sid()
-    await _turn(sid, minutes_ago=10 * 24 * 60)   # started 10 days ago
-    await _turn(sid, minutes_ago=5)              # still chatting
+    sid = await add_session(minutes_ago=10 * 24 * 60, active_minutes_ago=5)
     r = await client.get("/admin/sessions", params={"since": "24h"}, headers=auth)
     assert [row["id"] for row in r.json()] == [sid]
 
@@ -178,13 +212,17 @@ async def test_sessions_params_are_validated(client, auth, params):
 
 
 async def test_session_detail_replays_the_chat(client, auth):
-    sid = _sid()
-    await add_message(sid, "user", "hi", "10.0.0.1", 10)
-    await add_message(sid, "assistant", "hello", "10.0.0.1", 10)
-    await add_message(sid, "user", "budget 80L", "10.0.0.7", 2)
-    await add_message(sid, "error", "TimeoutError", "10.0.0.7", 2)
-    await add_message(sid, "assistant", "Sorry, try again.", "10.0.0.7", 2)
-    await _turn(_sid())   # another session's rows stay out
+    # Created 10 min ago, so it expires 24h after that.
+    sid = await add_session("10.0.0.7", minutes_ago=10, active_minutes_ago=2,
+                            expires_in_minutes=24 * 60 - 10,
+                            referrer_tag="karancodes95.github.io", country="IN")
+    await add_event(sid, "session_created", {"vertical": "real_estate"}, 10)
+    await add_event(sid, "question_asked", {"text": "hi"}, 10)
+    await add_event(sid, "answer_streamed", {"text": "hello", "chars": 5, "ms": 3}, 10)
+    await add_event(sid, "turn_complete", {"total_ms": 3}, 10)
+    await add_event(sid, "question_asked", {"text": "budget 80L"}, 2)
+    await add_event(sid, "error", {"stage": "generate_reply", "message": "TimeoutError"}, 2)
+    await _turn(await add_session())   # another session's events stay out
 
     r = await client.get(f"/admin/sessions/{sid}", headers=auth)
     assert r.status_code == 200
@@ -193,35 +231,44 @@ async def test_session_detail_replays_the_chat(client, auth):
     assert body["id"] == sid
     assert body["vertical"] == "real_estate"
     assert body["ip"] == "10.0.0.7"
-    assert body["expires_at"] is None
-    assert body["referrer_tag"] is None and body["country"] is None
+    assert body["referrer_tag"] == "karancodes95.github.io" and body["country"] == "IN"
+    assert _near(body["created_at"], 10) and _near(body["last_active"], 2)
+    assert _near(body["expires_at"], -(24 * 60 - 10))
     turns = body["turns"]
     assert all(set(t) == TURN_KEYS for t in turns)
-    assert [(t["role"], t["text"]) for t in turns] == [
-        ("user", "hi"), ("assistant", "hello"), ("user", "budget 80L"),
-        ("error", "TimeoutError"), ("assistant", "Sorry, try again."),
+    # session_created and turn_complete are not transcript turns.
+    assert [(t["role"], t["text"], t["stage"]) for t in turns] == [
+        ("user", "hi", None), ("assistant", "hello", None),
+        ("user", "budget 80L", None), ("error", "TimeoutError", "generate_reply"),
     ]
-    assert [t["stage"] for t in turns] == [None, None, None, "generate_reply", None]
-    assert _aware(body["created_at"]) == _aware(turns[0]["ts"])
-    assert _aware(body["last_active"]) == _aware(turns[-1]["ts"])
     assert _aware(turns[0]["ts"]) < _aware(turns[2]["ts"])
 
 
+async def test_session_detail_with_no_turns(client, auth):
+    sid = await add_session(None, expires_in_minutes=-5)
+    body = (await client.get(f"/admin/sessions/{sid}", headers=auth)).json()
+    assert body["turns"] == [] and body["ip"] is None
+    assert body["referrer_tag"] is None and body["country"] is None
+    assert _aware(body["expires_at"]) < datetime.now(timezone.utc)
+
+
 async def test_session_detail_accepts_an_uppercase_uuid_path(client, auth):
-    sid = _sid()
-    await _turn(sid)
+    sid = await add_session()
     r = await client.get(f"/admin/sessions/{sid.upper()}", headers=auth)
     assert r.status_code == 200 and r.json()["id"] == sid
 
 
 async def test_unknown_session_is_404(client, auth):
-    r = await client.get(f"/admin/sessions/{_sid()}", headers=auth)
-    assert r.status_code == 404
-    assert r.json()["detail"]["error"] == "session_not_found"
+    # Old chat_messages rows (from before the sessions table) are not sessions.
+    old = str(uuid4())
+    await add_message(old, "user", "hi")
+    for sid in (old, str(uuid4())):
+        r = await client.get(f"/admin/sessions/{sid}", headers=auth)
+        assert r.status_code == 404
+        assert r.json()["detail"]["error"] == "session_not_found"
 
 
 async def test_non_uuid_session_ids_are_unreachable(client, auth):
-    await _turn("not-a-uuid")
     r = await client.get("/admin/sessions/not-a-uuid", headers=auth)
     assert r.status_code == 422
 
@@ -270,7 +317,7 @@ async def test_leads_limit_and_since(client, auth):
     assert await names(since="7d") == ["ThreeDays", "Now"]
     assert await names(since="24h") == ["Now"]
     assert await names(limit=1) == ["Month"]
-    if (datetime.now() - timedelta(minutes=1)).date() == datetime.now().date():
+    if not await db_day_changes(minutes_ago=1):
         assert await names(since="today") == ["Now"]
 
 

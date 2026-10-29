@@ -9,8 +9,10 @@ and no test calls the Claude Agent SDK (tests that chat mock generate_reply).
 """
 
 import getpass
+import json
 import os
 import secrets
+from uuid import uuid4
 
 import asyncpg
 import httpx
@@ -48,7 +50,7 @@ from app.config import settings  # noqa: E402
 from app.db import SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
 
-TABLES = "chat_messages, leads, email_log, ip_usage"
+TABLES = "events, sessions, chat_messages, leads, email_log, ip_usage"
 
 
 @pytest.fixture(scope="session")
@@ -98,11 +100,31 @@ async def _clean():
     admin_auth._login_attempts.clear()
 
 
+CLIENT_IP = "127.0.0.1"
+
+
 @pytest.fixture
 async def client():
-    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 50000))
+    transport = httpx.ASGITransport(app=app, client=(CLIENT_IP, 50000))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
+
+
+@pytest.fixture
+async def client_from():
+    """A factory for clients whose socket peer is another IP (TRUST_PROXY is
+    off, so the peer is the visitor's IP)."""
+    clients = []
+
+    def make(ip: str) -> httpx.AsyncClient:
+        transport = httpx.ASGITransport(app=app, client=(ip, 50000))
+        ac = httpx.AsyncClient(transport=transport, base_url="http://test")
+        clients.append(ac)
+        return ac
+
+    yield make
+    for ac in clients:
+        await ac.aclose()
 
 
 @pytest.fixture
@@ -158,3 +180,70 @@ async def add_lead(name: str, score: int, minutes_ago: float = 0, **fields) -> N
             {**values, "secs": minutes_ago * 60},
         )
         await s.commit()
+
+
+async def add_session(
+    ip: str | None = "10.0.0.1",
+    minutes_ago: float = 0,
+    active_minutes_ago: float | None = None,
+    expires_in_minutes: float = 24 * 60,
+    referrer_tag: str | None = None,
+    country: str | None = None,
+    agent_session_id: str | None = None,
+) -> str:
+    """Insert one sessions row created `minutes_ago` before the DB's now, last
+    active `active_minutes_ago` (default: at creation), expiring
+    `expires_in_minutes` after now (negative = already expired). Returns its id."""
+    sid = str(uuid4())
+    if active_minutes_ago is None:
+        active_minutes_ago = minutes_ago
+    async with SessionLocal() as s:
+        await s.execute(
+            text(
+                "INSERT INTO sessions (id, created_at, last_active, vertical, referrer_tag, "
+                "                      country, expires_at, ip, agent_session_id) "
+                "VALUES (CAST(:id AS uuid), NOW() - make_interval(secs => :created), "
+                "        NOW() - make_interval(secs => :active), 'real_estate', :ref, "
+                "        :country, NOW() + make_interval(secs => :expires), "
+                "        CAST(:ip AS inet), :agent)"
+            ),
+            {"id": sid, "created": minutes_ago * 60, "active": active_minutes_ago * 60,
+             "ref": referrer_tag, "country": country, "expires": expires_in_minutes * 60,
+             "ip": ip, "agent": agent_session_id},
+        )
+        await s.commit()
+    return sid
+
+
+async def add_event(
+    session_id: str, type_: str, payload: dict | None = None, minutes_ago: float = 0
+) -> None:
+    """Insert one events row `minutes_ago` before the DB's now."""
+    async with SessionLocal() as s:
+        await s.execute(
+            text(
+                "INSERT INTO events (session_id, ts, type, payload) "
+                "VALUES (CAST(:sid AS uuid), NOW() - make_interval(secs => :secs), :type, "
+                "        CAST(:payload AS jsonb))"
+            ),
+            {"sid": session_id, "secs": minutes_ago * 60, "type": type_,
+             "payload": json.dumps(payload or {})},
+        )
+        await s.commit()
+
+
+async def db_day_changes(minutes_ago: float = 0, minutes_ahead: float = 1) -> bool:
+    """True when the DB's local day (date_trunc('day', NOW()) in its own
+    TimeZone, the boundary every 'today' window uses) differs between
+    `minutes_ago` and `minutes_ahead` from the DB's now, so a test asserting
+    'today' over that span would be flaky and should skip."""
+    async with SessionLocal() as s:
+        return (
+            await s.execute(
+                text(
+                    "SELECT date_trunc('day', NOW() - make_interval(secs => :ago)) "
+                    "    <> date_trunc('day', NOW() + make_interval(secs => :ahead))"
+                ),
+                {"ago": minutes_ago * 60, "ahead": minutes_ahead * 60},
+            )
+        ).scalar_one()

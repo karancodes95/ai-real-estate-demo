@@ -15,7 +15,12 @@ data a visitor volunteers.
 ## How it works
 
 ```
-visitor message --> /api/chat --> per-IP daily rate check (Postgres, atomic)
+page open --> POST /api/session --> server-issued session id (one per IP, 24h)
+
+visitor message + X-Session-Id --> /api/chat --> live session check
+                                        |
+                                        v
+                          per-IP daily rate check (Postgres, atomic)
                                         |
                                         v
                       Claude Agent SDK (system prompt, in-process MCP server)
@@ -35,8 +40,10 @@ SDK is configured so the model cannot reach for anything else: the built-in
 tool set is disabled (`tools=[]`), only the in-process lease MCP tools are
 allow-listed, `permission_mode="dontAsk"` denies everything unapproved without
 prompting, and `setting_sources=[]` isolates the run from any local filesystem
-settings or `CLAUDE.md`. Multi-turn context is carried by passing the prior
-`session_id` back as the SDK's `resume`.
+settings or `CLAUDE.md`. Multi-turn context: the visit's session row stores
+the agent's own SDK session id after the first good turn, and the next turn
+passes it as the SDK's `resume`, so a client never chooses (or learns) the
+conversation it continues.
 
 Lead scoring is split on purpose: Python rules turn the extracted fields into a
 reproducible 0-100 number (budget stated, timeline, financing, intent), while
@@ -52,13 +59,15 @@ defenses that matter here:
    tools (including the SDK's built-in Bash/Read/Write) are hard-disabled, and
    `permission_mode="dontAsk"` denies anything unapproved without hanging.
 2. **Validation at every boundary.** HTTP requests are Pydantic-validated
-   (message length capped, `session_id` length-bound because it is
-   client-controlled and fed to the SDK's `resume`); the `save_lead` tool
+   (message length capped; the session is a server-issued UUID checked
+   against the `sessions` table, and the SDK's `resume` comes only from that
+   row); the `save_lead` tool
    re-validates and normalizes every field before it is persisted.
 3. **Per-IP abuse cap.** A Postgres-backed daily counter (atomic
    `INSERT ... ON CONFLICT` then `SELECT ... FOR UPDATE`) rate-limits chat per
-   client IP and stays correct across multiple workers. `X-Forwarded-For` is
-   trusted only when `trust_proxy` is set.
+   client IP and stays correct across multiple workers. The proxy's
+   `X-Real-IP` is trusted only when `trust_proxy` is set and the socket peer
+   is loopback; `X-Forwarded-For` is never read.
 4. **Fail-open where safe, soft-fail where cosmetic.** A transient rate-limit
    table error lets the request through rather than taking down the demo; the
    day-0 email and per-turn logging are best-effort and never break a reply.
@@ -86,25 +95,30 @@ demo-only risks, and what to change before pointing this at real data.
 | ------ | ---- | ------- |
 | GET   | `/` | Visitor site (chat lives in the right-hand panel) |
 | GET   | `/health` | Liveness probe |
-| POST  | `/api/chat` | Visitor message in, assistant reply + `session_id` out |
+| POST  | `/api/session?referrer_tag&country` | Open (or get back) the visit's session: `{session_id, vertical, max_input_chars, max_output_tokens}` |
+| POST  | `/api/chat` | `{message}` + `X-Session-Id` in, `{reply, session_id}` out; an unknown or expired session is a 404 |
 | GET   | `/crm` | CRM-lite opportunities board (business-facing) |
 | GET   | `/api/crm/leads` | The caller's own leads (`X-Session-Id`), scored, highest first |
 | PATCH | `/api/crm/leads/{id}/stage` | Move one of the caller's own leads between stages |
 | POST  | `/admin/login` | `{password}` in, `{token, expires_at}` out (7-day admin JWT) |
 | POST  | `/admin/logout` | No-op (the token is stateless) |
-| GET   | `/admin/metrics?scope=today\|all` | Dashboard KPIs (same fields as the clinic demo; `bounce_rate_today` is null) |
-| GET   | `/admin/sessions?limit&since` | Chat sessions (UUID ids only), newest activity first |
+| GET   | `/admin/metrics?scope=today\|all` | Dashboard KPIs (the clinic demo's fields and SQL) |
+| GET   | `/admin/sessions?limit&since` | Visit sessions, newest activity first |
 | GET   | `/admin/sessions/{uuid}` | One session's transcript, error turns included |
 | GET   | `/admin/leads?limit&since` | Leads in the CRM's shape, best score first, ISO times |
 
 The `/admin` routes need `Authorization: Bearer <token>` from `/admin/login`
-(never the API key). They are read by bytcra-admin. Fields this demo does not
-measure come back as null: `bounce_rate_today`, `referrer_tag`, `country`,
-`expires_at`, and the `stage` of non-error turns.
+(never the API key). They are read by bytcra-admin. Like the clinic demo they
+are computed from the `sessions` and `events` tables: the chat page opens a
+session on load, so a visitor (a distinct session IP) who never asks counts
+toward `bounce_rate_today`. `referrer_tag` is the page link's `?ref=` (else the
+referring host) and `country` the client's value, else Cloudflare's
+`CF-IPCountry` from a trusted proxy peer (as for `X-Real-IP`). Only error turns carry a `stage`.
+Visits from before the `sessions` table are only in `chat_messages`.
 
 The CRM routes show each visitor only the leads from their own chat: they
-need `X-Session-Id`, the chat's session id (the chat page stores it in
-localStorage and the CRM page sends it). No session, or a non-UUID one, gets
+need `X-Session-Id`, the visit's session id from `/api/session` (the chat page
+stores it in localStorage and the CRM page sends it). No session, or a non-UUID one, gets
 `[]` or a 404. The lead's session id is set server-side by `save_lead`.
 Every lead across sessions is only on `/admin/leads` (see SECURITY.md).
 
@@ -140,7 +154,7 @@ SDK you need a working Claude Code login on the machine (or
    ```
 5. Open http://localhost:8091 and chat, then open http://localhost:8091/crm in
    the same browser to see the captured lead on the pipeline board (it shows
-   the leads of that browser's latest chat only).
+   the leads of that browser's session only).
 6. Run the tests (a throwaway `lead_to_lease_test` database on the local
    Postgres, created and dropped by the run; the Agent SDK is mocked):
    ```bash
@@ -159,7 +173,7 @@ real-estate-backend/
 ├── pytest.ini            Test config (asyncio)
 ├── tool/
 │   └── hash_admin_password.py  argon2id hash of the admin password for .env
-├── tests/                Admin API, login, error logging (ASGITransport, test DB)
+├── tests/                Sessions, chat, CRM scope, admin API, login (ASGITransport, test DB)
 ├── app/
 │   ├── main.py           FastAPI app: static site, /api/chat, CRM routes, headers
 │   ├── admin_auth.py     POST /admin/login (argon2id + JWT), the bearer gate
@@ -168,7 +182,9 @@ real-estate-backend/
 │   ├── config.py         Pydantic settings (env-driven)
 │   ├── db.py             Async engine + session factory + declarative Base
 │   ├── bootstrap.py      Create tables on startup
-│   ├── models.py         SQLAlchemy models: Lead, EmailLog, ChatMessage, IpUsage
+│   ├── models.py         SQLAlchemy models: Lead, EmailLog, ChatMessage, IpUsage, DemoSession, Event
+│   ├── sessions.py       Visit sessions: issue, reuse per IP, check, touch, agent id
+│   ├── events.py         Best-effort event log (the clinic demo's event types)
 │   ├── schemas.py        HTTP request/response contracts + pipeline stages
 │   ├── scoring.py        Deterministic 0-100 lead score
 │   ├── ratelimit.py      Postgres-backed per-IP daily cap (atomic)

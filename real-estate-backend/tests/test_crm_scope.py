@@ -1,6 +1,7 @@
-"""The CRM routes show and change only the caller's own chat session's leads,
-and save_lead stores the server's session id, never one from the LLM or the
-visitor's JSON. The public chat API key alone opens no lead.
+"""The CRM routes show and change only the caller's own session's leads, and
+save_lead stores the visitor's server-issued session id (never the agent's
+SDK id, one from the LLM or the visitor's JSON). The public chat API key alone
+opens no lead.
 
 No test reaches the Claude Agent SDK: the generate_reply tests swap
 ClaudeSDKClient for a fake that runs the tool the way the SDK does (a reader
@@ -19,7 +20,7 @@ from sqlalchemy import select
 from app.agent import client as agent_client
 from app.agent.tools import save_lead, turn_session_id
 from app.db import SessionLocal
-from app.models import Lead
+from app.models import DemoSession, Lead
 from conftest import add_lead
 
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -216,29 +217,38 @@ def fake_sdk(monkeypatch):
     return FakeSDKClient
 
 
-async def test_a_new_turn_runs_under_an_id_the_server_picks(fake_sdk):
-    _, sid = await agent_client.generate_reply("I want a flat in Baner")
+async def test_a_new_turn_runs_under_an_agent_id_the_server_picks(fake_sdk):
+    _, agent_id = await agent_client.generate_reply("I want a flat in Baner", session_id=A)
     (options,) = fake_sdk.seen
     assert options.resume is None
-    assert UUID.fullmatch(options.session_id) and sid == options.session_id
-    # The tool, two task hops away, stored the server's id, not the LLM's.
-    assert await _stored() == [("Meera", sid, "new")]
+    assert UUID.fullmatch(options.session_id) and agent_id == options.session_id
+    assert agent_id != A
+    # The tool, two task hops away, stored the visitor's session, not the
+    # agent's id or the LLM's.
+    assert await _stored() == [("Meera", A, "new")]
     assert turn_session_id.get() == ""
 
 
-async def test_a_resumed_turn_keeps_its_id(fake_sdk):
-    _, sid = await agent_client.generate_reply("my email is ...", resume=A)
+async def test_a_resumed_turn_keeps_its_agent_id(fake_sdk):
+    _, agent_id = await agent_client.generate_reply("my email is ...", session_id=A,
+                                                    resume="agent-7")
     (options,) = fake_sdk.seen
     # The SDK takes session_id only without resume.
-    assert options.resume == A and options.session_id is None
-    assert sid == A
+    assert options.resume == "agent-7" and options.session_id is None
+    assert agent_id == "agent-7"
     assert await _stored() == [("Meera", A, "new")]
 
 
 async def test_chat_then_crm_shows_the_visitor_their_lead_only(client, api_key, fake_sdk):
     await add_lead("Ben", 90, session_id=B)
-    r = await client.post("/api/chat", json={"message": "hi"}, headers=_h(api_key))
-    sid = r.json()["session_id"]
-    assert UUID.fullmatch(sid) and sid != B
+    sid = (await client.post("/api/session", headers=_h(api_key))).json()["session_id"]
+    r = await client.post("/api/chat", json={"message": "hi"}, headers=_h(api_key, sid))
+    assert r.json()["session_id"] == sid and sid != B
+    # The lead is under the server-issued session the CRM page sends.
     assert await _names(client, _h(api_key, sid)) == ["Meera"]
     assert await _names(client, _h(api_key, B)) == ["Ben"]
+    # The agent's own id is stored server-side only and opens no lead.
+    async with SessionLocal() as s:
+        agent_id = (await s.get(DemoSession, sid)).agent_session_id
+    assert UUID.fullmatch(agent_id) and agent_id != sid
+    assert await _names(client, _h(api_key, agent_id)) == []

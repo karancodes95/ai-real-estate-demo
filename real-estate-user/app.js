@@ -14,13 +14,58 @@ const API_KEY = "deababf23bc76803b8c0c73acf33db16b90236c5339799bd7e89eddb46cd8ab
 const msgs = document.getElementById("chat-msgs");
 const input = document.getElementById("chat-text");
 const sendBtn = document.getElementById("chat-send");
-let sessionId = null;  // carries multi-turn context across requests
+// This visit's session: the server issues it (POST /api/session, opened on
+// page load) and reuses a live one for the same network for 24h. Chat sends it
+// as X-Session-Id and the server keeps the conversation's context under it.
+let sessionPromise = null;
 // The CRM page (crm.js) shows a visitor only the leads from their own chat:
 // it sends the session id stored here. Both pages are on one origin, so they
 // share localStorage. If storage is blocked, the CRM just shows no leads.
 const SESSION_KEY = "amberstone.chat_session_id";
 function rememberSession(id) {
   try { localStorage.setItem(SESSION_KEY, id); } catch { /* storage blocked */ }
+}
+
+// Where the visitor came from, for the admin's referrer_tag: a ?ref= tag on
+// the page link, else the referring site's host name.
+function referrerTag() {
+  try {
+    const ref = new URLSearchParams(location.search).get("ref");
+    if (ref) return ref.slice(0, 100);
+    if (document.referrer) return new URL(document.referrer).hostname.slice(0, 100) || null;
+  } catch { /* malformed referrer */ }
+  return null;
+}
+
+async function openSession() {
+  const tag = referrerTag();
+  const query = tag ? `?referrer_tag=${encodeURIComponent(tag)}` : "";
+  const res = await fetch(`${BASE_URL}/api/session${query}`, {
+    method: "POST",
+    headers: { "X-API-Key": API_KEY },
+  });
+  if (!res.ok) throw new Error(`session ${res.status}`);
+  const data = await res.json();
+  rememberSession(data.session_id);
+  if (data.max_input_chars) input.maxLength = data.max_input_chars;
+  return data.session_id;
+}
+
+// The open session, opening one if needed (a failed open is retried later).
+function ensureSession() {
+  if (!sessionPromise) {
+    sessionPromise = openSession().catch((e) => { sessionPromise = null; throw e; });
+  }
+  return sessionPromise;
+}
+
+async function postChat(text) {
+  const sid = await ensureSession();
+  return fetch(`${BASE_URL}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-API-Key": API_KEY, "X-Session-Id": sid },
+    body: JSON.stringify({ message: text }),
+  });
 }
 
 // Minimal, injection-safe Markdown: escape HTML first, then a small subset.
@@ -59,20 +104,17 @@ async function send() {
   setBusy(true);
   const typing = addMsg("Assistant is typing…", "bot typing");
   try {
-    const res = await fetch(`${BASE_URL}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-API-Key": API_KEY },
-      body: JSON.stringify({ message: text, session_id: sessionId }),
-    });
+    let res = await postChat(text);
+    if (res.status === 404) {
+      // The session expired (24h) or is gone: open a new one and retry once.
+      sessionPromise = null;
+      res = await postChat(text);
+    }
     typing.remove();
     if (!res.ok) {
       addMsg("Sorry, something went wrong. Please try again.", "bot");
     } else {
       const data = await res.json();
-      if (data.session_id) {
-        sessionId = data.session_id;
-        rememberSession(sessionId);
-      }
       addMsg(data.reply, "bot");
     }
   } catch (e) {
@@ -86,3 +128,4 @@ async function send() {
 sendBtn.addEventListener("click", send);
 input.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
 input.focus();
+ensureSession().catch(() => { /* opened again on the first message */ });

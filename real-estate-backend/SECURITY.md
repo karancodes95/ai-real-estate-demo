@@ -14,9 +14,9 @@ action, and the system is designed so it can still only capture a lead.
    without prompting or hanging, and `setting_sources=[]` isolates the run from
    any local filesystem settings / `CLAUDE.md`.
 2. **Validation at every boundary** (`app/schemas.py`, `app/agent/tools.py`):
-   the chat request caps message length (2000 chars) and bounds `session_id`
-   length (it is client-controlled and passed to the SDK's `resume`). The
-   `save_lead` tool re-validates and normalizes every field, requires a name and
+   the chat request caps message length (2000 chars), and the session
+   metadata on `POST /api/session` is length-bound (`referrer_tag` 100,
+   `country` 8, `vertical` 32). The `save_lead` tool re-validates and normalizes every field, requires a name and
    a syntactically valid email before saving, and truncates free-text fields
    (rationale) before they reach the database. The lead's session id is not
    an input: it comes from the server-side turn context.
@@ -41,10 +41,18 @@ action, and the system is designed so it can still only capture a lead.
    with `ADMIN_JWT_SECRET`, and 5 failed logins per IP per 15 min. The
    public `API_KEY` never opens them. A failed chat turn stores only the
    exception's class name, never its message.
-7. **The CRM shows each visitor only their own leads** (`app/main.py`,
-   `app/agent/client.py`, `app/agent/tools.py`): the server picks a new
-   chat's session id (a UUID passed to the SDK) and `save_lead` stores the
-   turn's id on the lead, never one from the LLM or the request JSON.
+7. **Server-issued sessions** (`app/sessions.py`, `app/main.py`): the chat
+   page opens a visit with `POST /api/session` and the server picks its id (a
+   UUID, valid 24h from creation). `/api/chat` takes it as `X-Session-Id` and
+   answers a 404, before the rate limit or any model call, for an id that is
+   not in the `sessions` table or has expired, so a made-up id cannot open or
+   continue a chat. The agent resumes only the SDK session stored on that row
+   (`agent_session_id`), which never leaves the server; a `session_id` in the
+   request body is ignored.
+8. **The CRM shows each visitor only their own leads** (`app/main.py`,
+   `app/agent/client.py`, `app/agent/tools.py`): `save_lead` stores the
+   turn's server-issued session id on the lead, never one from the LLM or the
+   request JSON.
    `GET /api/crm/leads` and the stage `PATCH` act only on leads whose
    session id matches the caller's `X-Session-Id` (a canonical UUID); none,
    or any other value, gets `[]` or a 404. The chat page stores its session
@@ -57,15 +65,18 @@ action, and the system is designed so it can still only capture a lead.
 These are acceptable because the data is fictional and self-service. They are
 called out so anyone reusing this code for real data knows to change them:
 
-1. **A chat session id is a bearer secret.** The CRM has no login: whoever
-   holds a session id sees and moves that session's leads, and can resume
-   that chat (`resume` takes the id the client sends). Ids are random UUIDs
-   kept in the visitor's browser, so this is not guessable, but a leaked id
-   (shared device, a script on the same origin) exposes that one session.
-   Bind sessions to the browser that started them, or put the CRM behind a
-   real login, before real leads flow through it.
+1. **A session id is a bearer secret, shared per IP.** The CRM has no login:
+   whoever holds a session id sees and moves that session's leads and
+   continues that chat. Ids are random UUIDs, so they are not guessable, but
+   like the clinic demo `POST /api/session` hands back the live session of
+   the caller's IP for 24h, so everyone behind one public IP (an office, a
+   mobile carrier's shared NAT) shares one chat and its leads, including any
+   name, email or phone typed into it. A leaked id (shared device, a script on
+   the same origin) exposes that session too. Bind sessions to the browser
+   that started them, or put the CRM behind a real login, before real leads
+   flow through it.
 2. **Lead text is stored verbatim.** Chat transcripts and lead fields are
-   persisted as entered (`chat_messages`, `leads`) for demo follow-up, including
+   persisted as entered (`chat_messages`, `events`, `leads`) for demo follow-up, including
    whatever email/phone a visitor types. Add a PII scrubber / retention policy
    before real use.
 3. **The chat reply is a single non-streamed response.** Fine for a demo; for
@@ -76,12 +87,17 @@ called out so anyone reusing this code for real data knows to change them:
 
 ## Deployment requirements
 
-1. **Run behind a trusted reverse proxy and set `TRUST_PROXY=true`.** The app
-   trusts `X-Forwarded-For` only when `trust_proxy` is set, and then reads the
-   rightmost entry (the IP the proxy itself observed); the left entries are
-   client-supplied and spoofable. With `TRUST_PROXY` off, it uses the socket
-   peer. Never expose uvicorn directly to the internet with `TRUST_PROXY=true`,
-   or the per-IP cap can be bypassed by forging the header.
+1. **Run behind a trusted reverse proxy and set `TRUST_PROXY=true`.** Like
+   the clinic demo, the app trusts the proxy's `X-Real-IP` only when
+   `trust_proxy` is set and the socket peer is loopback (nginx on the same
+   host, with uvicorn on 127.0.0.1); a header from any other peer is ignored
+   and its socket address is used. `X-Forwarded-For` is never read (its left
+   entries are client-supplied and spoofable), and an unparseable address
+   becomes `0.0.0.0`. With `TRUST_PROXY` off, it always uses the socket peer.
+   Keep uvicorn bound to 127.0.0.1, or a client on the box could forge the
+   header. The same trusted peer also lets a session take its country from
+   Cloudflare's `CF-IPCountry` header when the client sends none (analytics
+   only).
 2. **Keep secrets in `.env`, never committed.** Set `DATABASE_URL` and, if
    sending real email, `ZOHO_EMAIL` + `ZOHO_APP_PASSWORD` (an app-specific
    password, never your account password). Leave the email creds empty to

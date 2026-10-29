@@ -2,17 +2,28 @@
 
 from pydantic import BaseModel, Field
 
+# The chat message cap, also sent to the client by POST /api/session.
+MAX_INPUT_CHARS = 2000
+
+
+class SessionResponse(BaseModel):
+    # The clinic demo's shape. The caps are UX hints for the client.
+    session_id: str
+    vertical: str
+    max_input_chars: int
+    # The Agent SDK runs with no output-token cap here, so this is 0 (none).
+    max_output_tokens: int
+
 
 class ChatRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=2000)
-    # Echoed back from a prior reply to continue that conversation (multi-turn).
-    # Client-controlled and passed to the SDK's resume; bound its length.
-    session_id: str | None = Field(default=None, max_length=100)
+    # The session is the X-Session-Id header (a server-issued id), not a body
+    # field: a "session_id" sent in the body is ignored.
+    message: str = Field(min_length=1, max_length=MAX_INPUT_CHARS)
 
 
 class ChatResponse(BaseModel):
     reply: str
-    session_id: str | None = None
+    session_id: str | None = None  # the caller's X-Session-Id, echoed
 
 
 # CRM-lite pipeline stages, in board order.
