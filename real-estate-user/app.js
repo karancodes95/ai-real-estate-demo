@@ -8,7 +8,7 @@
 // low-value bot-gate key (not a real secret); for a public deploy, proxy the
 // call instead of shipping any key to the page.
 const BASE_URL = "https://demo-api.bytcra.com/realestate";  // hosted backend
-const API_KEY = "deababf23bc76803b8c0c73acf33db16b90236c5339799bd7e89eddb46cd8aba";  // Karan swaps the real key at deploy
+const API_KEY = "deababf23bc76803b8c0c73acf33db16b90236c5339799bd7e89eddb46cd8aba";  // real key swapped in at deploy
 // -------------------------------------------------------------------------
 
 const msgs = document.getElementById("chat-msgs");
